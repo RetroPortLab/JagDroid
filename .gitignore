@@ -25,3 +25,6 @@ keystore.properties
 *.ppm
 *.wav
 .DS_Store
+
+# Release APKs published by .github/workflows/release.yml
+!dist/*.apk
