@@ -91,6 +91,10 @@ int main(int argc, char** argv) {
         for (auto& h : holds) if (f >= h.from && f < h.to) m |= h.mask;
         j->setButtons(m);
         j->runFrame();
+        if (getenv("JAG_RATELOG")) {   // report audio-rate changes
+            static int lastRate = -1; int r = j->audioRate();
+            if (r != lastRate) { fprintf(stderr, "[rate] frame %d: %d Hz (SMODE=%04X SCLK=%04X)\n", f, r, j->jerryReg16(0x1D4 + 0 + 0x0) , 0); lastRate = r; }
+        }
         if (const char* df = getenv("JAG_DUMPFRAMES")) {   // "from:to:prefix" writes each frame as prefix_NNNNN.ppm
             static long dfrom = -1, dto = -1; static char pre[256];
             if (dfrom < 0) sscanf(df, "%ld:%ld:%255s", &dfrom, &dto, pre);

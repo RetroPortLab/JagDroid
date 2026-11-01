@@ -11,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -55,6 +56,43 @@ int g_winW = 0, g_winH = 0;
 AAudioStream* g_stream = nullptr;
 int g_streamRate = 0;
 
+// Jaguar sound arrives at whatever rate the game programs (the BIOS jingle uses
+// ~10.6 kHz). Handing that to the sound card unfiltered lets Android resample it
+// crudely, which crackles. Resample here to a fixed 48 kHz with cubic
+// interpolation and a gentle low-pass, as the console's analogue output stage did.
+constexpr int OUT_RATE = 48000;
+struct Resampler {
+    float h[4][2] = {};          // last four input frames (oldest first)
+    double pos = 0;              // fractional position between h[1] and h[2]
+    float lp[2] = {0, 0};
+    std::vector<int16_t> out;
+    void reset() { std::memset(h, 0, sizeof h); pos = 0; lp[0] = lp[1] = 0; }
+    void process(const int16_t* in, int frames, int inRate) {
+        out.clear();
+        const double step = (double)inRate / OUT_RATE;
+        // low-pass corner just under the input Nyquist (capped for high rates)
+        const float fc = std::min(0.42f * (float)inRate, 16000.0f);
+        const float a = 1.0f - std::exp(-2.0f * 3.14159265f * fc / OUT_RATE);
+        for (int i = 0; i < frames; i++) {
+            for (int k = 0; k < 3; k++) { h[k][0] = h[k + 1][0]; h[k][1] = h[k + 1][1]; }
+            h[3][0] = in[2 * i]; h[3][1] = in[2 * i + 1];
+            while (pos < 1.0) {
+                const float t = (float)pos;
+                for (int c = 0; c < 2; c++) {
+                    const float p0 = h[0][c], p1 = h[1][c], p2 = h[2][c], p3 = h[3][c];
+                    float v = p1 + 0.5f * t * (p2 - p0 + t * (2 * p0 - 5 * p1 + 4 * p2 - p3 + t * (3 * (p1 - p2) + p3 - p0)));
+                    lp[c] += a * (v - lp[c]);
+                    lp[c] += a * (v - lp[c]);   // two poles
+                    float o = lp[c];
+                    out.push_back((int16_t)std::max(-32768.0f, std::min(32767.0f, o)));
+                }
+                pos += step;
+            }
+            pos -= 1.0;
+        }
+    }
+} g_resampler;
+
 void closeAudio() {
     if (g_stream) { AAudioStream_requestStop(g_stream); AAudioStream_close(g_stream); g_stream = nullptr; }
     g_streamRate = 0;
@@ -66,7 +104,8 @@ void openAudio(int rate) {
     if (AAudio_createStreamBuilder(&b) != AAUDIO_OK) return;
     AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
     AAudioStreamBuilder_setChannelCount(b, 2);
-    AAudioStreamBuilder_setSampleRate(b, rate);
+    AAudioStreamBuilder_setSampleRate(b, OUT_RATE);
+    g_resampler.reset();
     AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     if (AAudioStreamBuilder_openStream(b, &g_stream) == AAUDIO_OK) {
         int32_t burst = AAudioStream_getFramesPerBurst(g_stream);
@@ -297,13 +336,14 @@ void emuLoop() {
         }
 
         int rate = g_emu->audioRate();
-        if (rate != g_streamRate && rate > 4000 && rate < 100000) openAudio(rate);
-        if (g_stream && !g_emu->audio.empty()) {
-            int frames = (int)g_emu->audio.size() / 2;
+        if (g_streamRate != OUT_RATE) openAudio(OUT_RATE);
+        if (g_stream && !g_emu->audio.empty() && rate > 4000 && rate < 200000) {
+            g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate);
+            int frames = (int)g_resampler.out.size() / 2;
             // Wait briefly for room rather than dropping samples: a full buffer
             // means emulation is running slightly ahead of the sound card, and
             // dropped chunks are heard as clicks and distortion.
-            AAudioStream_write(g_stream, g_emu->audio.data(), frames, 20 * 1000 * 1000);
+            AAudioStream_write(g_stream, g_resampler.out.data(), frames, 20 * 1000 * 1000);
         }
 
         next += frameTime;

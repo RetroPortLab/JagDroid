@@ -262,6 +262,9 @@ void Jaguar::bootWithoutBios() {
 // happens while disabled is lost, so it can't fire later when the game
 // enables it before installing a handler.
 void Jaguar::tomRaise(int bit) {
+    static const char* intLog = getenv("JAG_INTLOG");
+    if (intLog && (long)frameCount >= atol(intLog) && (long)frameCount < atol(intLog) + 8)
+        fprintf(stderr, "[tomint] bit %d frame %llu VC=%d en=%02X\n", bit, (unsigned long long)frameCount, halfLine, tomIntEnable);
     if (!(tomIntEnable & (1u << bit))) return;
     tomIntPending |= (1u << bit);
     updateM68kIrq();
@@ -493,6 +496,9 @@ void Jaguar::tomWriteHook(uint32_t off, uint32_t value, int size) {
 #ifdef JAG_TRACE
     jag_trace_tomwrite(off, value, size);
 #endif
+    // Writing the TOM PIT registers (re)starts its count: games re-arm the timer
+    // each frame to time a raster interrupt.
+    if (off < 0x54 && off + (uint32_t)size > T_PIT0) tomPitAcc = 0;
     // Blitter B_I0..B_I3 ($F0227C-$F0228B) are aliases into the pattern and
     // source data registers: byte 1 of each is that lane's integer intensity
     // (in PATD) and bytes 2-3 its fraction (in SRCD). $F0227C is the rightmost lane.
@@ -716,8 +722,15 @@ void Jaguar::runFrame() {
                 riscBusUse = 0;
                 busMaster = 1; gpu.run(riscPerSlice);
                 busMaster = 2; dsp.run(riscPerSlice);
-                double held = std::min(sliceSys, std::min(blitBusy, sliceSys) + riscBusUse);
+                // The blitter shares the bus with the 68000 in page-mode bursts; it never
+                // shuts the CPU out entirely (Fight for Life's 2 ms blits froze it long
+                // enough to take its video interrupt tens of lines late).
+                static const double blitShare = getenv("JAG_BLITSHARE") ? atof(getenv("JAG_BLITSHARE")) : 0.75;
+                double held = std::min(sliceSys, std::min(std::min(blitBusy, sliceSys), sliceSys * blitShare) + riscBusUse);
                 int cyc = (int)(m68kPerSlice * (1.0 - held / sliceSys));
+                { static const char* hl = getenv("JAG_HELDLOG");
+                  if (hl && (long)frameCount == atol(hl) && s == 0 && line < 120)
+                      fprintf(stderr, "[held] vc=%d blit=%.0f risc=%.0f cyc=%d/%d gpu=%d dsp=%d\n", halfLine, blitBusy, riscBusUse, cyc, (int)m68kPerSlice, (int)gpu.running, (int)dsp.running); }
                 busMaster = 0; if (cyc > 0) m68k_execute(cyc);
             }
             busMaster = 0;
@@ -745,5 +758,9 @@ unsigned int m68k_read_disassembler_8(unsigned int a) { return g_jag->read8(a); 
 unsigned int m68k_read_disassembler_16(unsigned int a) { return g_jag->read16(a); }
 unsigned int m68k_read_disassembler_32(unsigned int a) { return g_jag->read32(a); }
 // TOM presents vector 64 ($100) for its level-2 interrupt.
-int jag_m68k_int_ack(int level) { return level == 2 ? 64 : (int)M68K_INT_ACK_AUTOVECTOR; }
+int jag_m68k_int_ack(int level) {
+    static const char* il = getenv("JAG_INTLOG");
+    if (il && g_jag && (long)g_jag->frameCount >= atol(il) && (long)g_jag->frameCount < atol(il) + 8)
+        fprintf(stderr, "[intack] level %d frame %llu VC=%d slice=%d pend=%02X\n", level, (unsigned long long)g_jag->frameCount, g_jag->halfLine, g_jag->lineSlice, g_jag->tomIntPending);
+    return level == 2 ? 64 : (int)M68K_INT_ACK_AUTOVECTOR; }
 }
