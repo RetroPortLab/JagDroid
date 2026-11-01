@@ -647,7 +647,8 @@ void Jaguar::runFrame() {
     uint16_t vdb = tomReg16(T_VDB), vde = tomReg16(T_VDE);
     // The object processor runs on every line from VDB to VDE, including lines
     // in vertical blank that are never shown; games put GPU objects there.
-    int opEnd = (vde <= vdb || vde > 2 * lines) ? 2 * lines : vde;
+    const bool opEveryLine = vde <= vdb || vde > 2 * lines;   // VDE=$FFFF: "run the OP on every line"
+    int opEnd = opEveryLine ? 2 * lines : vde;
     if (vde <= vdb || vde > 2 * lines) vde = (uint16_t)(2 * lines - 4);
     uint16_t vbb = tomReg16(T_VBB);
     if (vbb > vdb && vbb < vde) vde = vbb;   // nothing is shown once vertical blank starts
@@ -676,7 +677,13 @@ void Jaguar::runFrame() {
 
         bool visible = halfLine >= firstVisible && (halfLine - firstVisible) / 2 < maxVisible;
         if (halfLine >= (vdb & ~1) && halfLine < opEnd) {
-            busMaster = 4; opRenderLine(halfLine); busMaster = 0;
+            // With VDE=$FFFF, bitmap objects stop at the bottom of the shown
+            // picture; below it the list is still walked so GPU objects and
+            // branches fire, but bitmaps are not drawn or written back. Super
+            // Burnout swaps in the next frame's list at line 520, and passes
+            // after that ate the top row of every piece of text.
+            opSkipBitmaps = opEveryLine && halfLine >= firstVisible + 2 * maxVisible;
+            busMaster = 4; opRenderLine(halfLine); busMaster = 0; opSkipBitmaps = false;
             if (visible) outputLine(halfLine);
             else if (tomReg16(T_VMODE) & 0x80) {   // still clear the line buffer like a shown line
                 std::fill(lineBuf, lineBuf + 720, tomReg16(T_BG));

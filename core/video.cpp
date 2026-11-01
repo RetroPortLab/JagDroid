@@ -207,7 +207,7 @@ void Jaguar::opRenderLine(int vc) {
             static const char* opSkip = getenv("JAG_OPSKIP");   // diagnostics: "addr,addr" objects not drawn
             bool skipDraw = false;
             if (opSkip) { char b[16]; snprintf(b, sizeof b, "%06X", addr); skipDraw = strstr(opSkip, b) != nullptr; }
-            if (vc >= ypos && height > 0) {
+            if (vc >= ypos && height > 0 && !opSkipBitmaps) {
                 if (skipDraw) { /* still advance below */ }
                 if (type == 0) {
                     if (!skipDraw) drawBitmapLine(this, data, p1, 0x20);

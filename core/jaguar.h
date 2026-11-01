@@ -197,6 +197,7 @@ public:
     // away from the 68000 and raises its interrupt only once that time has passed.
     double blitBusy = 0;           // system cycles of blitter work still outstanding
     bool blitIntPending = false;
+    bool opSkipBitmaps = false;     // OP pass below the shown picture: walk the list, skip bitmaps
     double riscBusUse = 0;         // bus clocks the GPU/DSP used this slice (the 68000 waits for them)
 
     // Object processor & video
