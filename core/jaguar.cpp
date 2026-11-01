@@ -493,6 +493,16 @@ void Jaguar::tomWriteHook(uint32_t off, uint32_t value, int size) {
 #ifdef JAG_TRACE
     jag_trace_tomwrite(off, value, size);
 #endif
+    // Blitter B_I0..B_I3 ($F0227C-$F0228B) are aliases into the pattern and
+    // source data registers: byte 1 of each is that lane's integer intensity
+    // (in PATD) and bytes 2-3 its fraction (in SRCD). $F0227C is the rightmost lane.
+    for (uint32_t b = off; b < off + (uint32_t)size; b++) {
+        if (b < 0x227C || b >= 0x228C) continue;
+        const uint32_t L = (b - 0x227C) / 4, k = (b - 0x227C) % 4;
+        if (k == 1) tom[0x2268 + 7 - 2 * L] = tom[b];
+        else if (k == 2) tom[0x2240 + 6 - 2 * L] = tom[b];
+        else if (k == 3) tom[0x2240 + 7 - 2 * L] = tom[b];
+    }
     if (off == T_INT1 && size != 4) {
         tomIntEnable = value & 0x1F;
         tomIntPending &= ~((value >> 8) & 0x1F);

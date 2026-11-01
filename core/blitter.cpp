@@ -200,13 +200,26 @@ void Jaguar::blitterGo() {
     if (outer == 0) outer = 1;
 
     const uint64_t patd = R64(B_PATD), srcd = R64(B_SRCD), dstd = R64(B_DSTD);
-    uint32_t inten = R32(B_I3);
     const int32_t iinc = (int32_t)R32(B_IINC);
-    // Phrase-mode Gouraud: the four 16-bit pixels of a phrase take their
-    // intensities from I0 (leftmost) .. I3 (rightmost), and all four step by
-    // IINC once per phrase. Pixel mode uses I3 alone, stepping per pixel.
-    // Register order in memory is I3, I2, I1, I0, so iph[p] reads I(p).
-    uint32_t iph[4] = {R32(B_I3 + 12), R32(B_I3 + 8), R32(B_I3 + 4), R32(B_I3)};
+    // Gouraud intensities live in the pattern and source data registers: the
+    // B_I0..B_I3 addresses are write aliases. Lane p of a phrase (0 = leftmost)
+    // takes its integer intensity from PATD byte 2p+1 (beside its colour byte)
+    // and its 16-bit fraction from SRCD bytes 2p..2p+1. Games that rewrite PATD
+    // therefore restart the shading (Iron Soldier's menu gradient; keeping
+    // separate registers let it creep brighter every frame and wrap).
+    // All four lanes step by IINC once per phrase; pixel mode uses the
+    // rightmost lane alone, stepping per pixel.
+    auto laneInten = [&](int p) {
+        return (uint32_t)tom[B_PATD + 1 + 2 * p] << 16 | (uint32_t)tom[B_SRCD + 2 * p] << 8 | tom[B_SRCD + 2 * p + 1];
+    };
+    uint32_t iph[4] = {laneInten(0), laneInten(1), laneInten(2), laneInten(3)};
+    uint32_t inten = iph[3];
+    // Intensities saturate at 0 and $FFFFFF rather than wrapping.
+    const int32_t iinc24 = (int32_t)((uint32_t)iinc << 8) >> 8;
+    auto stepI = [&](uint32_t& v) {
+        int32_t n = (int32_t)(v & 0xFFFFFF) + iinc24;
+        v = (uint32_t)(n < 0 ? 0 : (n > 0xFFFFFF ? 0xFFFFFF : n));
+    };
     long lastPhrase = LONG_MIN;
     // Z interpolation mirrors the intensity scheme: Z3..Z0 per phrase pixel
     // stepping by ZINC per phrase, or Z3 stepping by ZINC per pixel.
@@ -357,12 +370,12 @@ void Jaguar::blitterGo() {
                 if (dstA.xadd == 0) {
                     long ph = (long)((dx >= 0) ? dx / 4 : (dx - 3) / 4);
                     if (lastPhrase != LONG_MIN && ph != lastPhrase)
-                        for (auto& v : iph) v += (uint32_t)iinc;
+                        for (auto& v : iph) stepI(v);
                     lastPhrase = ph;
                     iv = iph[((dx % 4) + 4) % 4];
                 } else {
                     iv = inten;
-                    inten += (uint32_t)iinc;
+                    stepI(inten);
                 }
                 out = (fromPhrase(patd, 16, dx) & 0xFF00) | ((iv >> 16) & 0xFF);
                 ivUsed = iv;
@@ -448,10 +461,18 @@ void Jaguar::blitterGo() {
     }
     if (gourd) {
         if (dstA.xadd == 0) {
-            for (int k = 0; k < 4; k++) iph[k] += (uint32_t)iinc;   // the hardware leaves them one phrase on
-            for (int k = 0; k < 4; k++) W32(B_I3 + 4 * k, iph[3 - k]);
+            for (int k = 0; k < 4; k++) stepI(iph[k]);   // the hardware leaves them one phrase on
         } else {
-            W32(B_I3, inten);
+            iph[3] = inten;
+        }
+        // The accumulators are the PATD/SRCD lanes; leave the end values there
+        // (and in the alias addresses, for anything that reads them back).
+        for (int p = 0; p < 4; p++) {
+            if (dstA.xadd != 0 && p != 3) continue;
+            tom[B_PATD + 1 + 2 * p] = (uint8_t)(iph[p] >> 16);
+            tom[B_SRCD + 2 * p] = (uint8_t)(iph[p] >> 8);
+            tom[B_SRCD + 2 * p + 1] = (uint8_t)iph[p];
+            W32(B_I3 + 4 * (3 - p), iph[p]);
         }
     }
 

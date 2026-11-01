@@ -329,6 +329,7 @@ public class MainActivity extends Activity {
                     continue;
                 }
                 String lower = name.toLowerCase(Locale.US);
+                if (looksLikeBios(lower)) continue;
                 if (lower.endsWith(".j64") || lower.endsWith(".jag") || lower.endsWith(".rom")) {
                     if (descend) out.add(new Game(DocumentsContract.buildDocumentUriUsingTree(tree, id), name));
                 } else if (lower.endsWith(".zip")) {
@@ -343,6 +344,12 @@ public class MainActivity extends Activity {
                 }
             }
         } catch (Exception ignored) { }
+    }
+
+    /** BIOS images sitting in the games folder are not games. */
+    static boolean looksLikeBios(String lower) {
+        return lower.contains("bios") || lower.startsWith("jagboot") || lower.startsWith("jagcd")
+                || lower.contains("jaguar cd boot") || lower.contains("[bios]");
     }
 
     /** 1 if the zip holds a cartridge, 2 if it holds a CD (cue sheet), 0 otherwise. */
@@ -400,7 +407,7 @@ public class MainActivity extends Activity {
         boolean hasState = false;
         for (int s = 1; s <= SLOTS; s++) hasState |= stateFile(g.key(), s).exists();
         String badge = hasState ? "SAVE STATE" : (hasSave ? "SAVE" : null);
-        LinearLayout r = row(g.title, sub.toString(), badge, v -> launch(g));
+        LinearLayout r = row((g.isCd() ? "\uD83D\uDCBF  " : "") + g.title, sub.toString(), badge, v -> launch(g));
         if (badge != null) {
             TextView b = (TextView) r.findViewWithTag("value");
             b.setTextSize(11);
