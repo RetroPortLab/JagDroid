@@ -1,10 +1,14 @@
-# Publishes a GitHub release when a version tag (v0.27, v0.28, ...) is pushed.
-# The signed APK and its notes are committed under dist/ beforehand, so the
-# signing key never has to leave the machine that builds releases.
+# Publishes a GitHub release whenever a new signed APK is committed to dist/
+# on main (dist/JagDroid-v0.28.apk -> release and tag v0.28, with notes from
+# dist/notes-v0.28.md). The APK is built and signed before it is committed, so
+# the signing key never has to leave the machine that builds releases.
+# Releases that already exist are left alone.
 name: Release
 on:
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: ['dist/**']
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
@@ -12,13 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Publish release
+      - name: Publish new releases
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
         run: |
-          apk="dist/JagDroid-$TAG.apk"
-          notes="dist/notes-$TAG.md"
-          test -f "$apk" || { echo "missing $apk"; exit 1; }
-          [ -f "$notes" ] || echo "JagDroid $TAG" > "$notes"
-          gh release create "$TAG" "$apk" --title "JagDroid $TAG" --notes-file "$notes" --latest
+          for apk in $(ls dist/JagDroid-v*.apk | sort -V); do
+            tag=$(basename "$apk" .apk); tag=${tag#JagDroid-}
+            if gh release view "$tag" >/dev/null 2>&1; then echo "$tag already released"; continue; fi
+            notes="dist/notes-$tag.md"
+            [ -f "$notes" ] || echo "JagDroid $tag" > "$notes"
+            gh release create "$tag" "$apk" --target "$GITHUB_SHA" --title "JagDroid $tag" --notes-file "$notes" --latest
+          done
