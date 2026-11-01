@@ -1,0 +1,70 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.retroportlab.jagdroid'
+    compileSdk 35
+    ndkVersion '27.0.12077973'
+
+    defaultConfig {
+        applicationId 'com.retroportlab.jagdroid'
+        minSdk 26          // AAudio
+        targetSdk 35
+        versionCode 27
+        versionName '0.27-experimental'
+        ndk {
+            abiFilters 'arm64-v8a'   // Snapdragon handhelds
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags '-O3 -fno-exceptions -fno-rtti'
+                cFlags '-O3'
+                arguments '-DANDROID_STL=c++_static'
+            }
+        }
+    }
+
+    // Release key: read from android/keystore.properties (never committed) or the
+    // JAGDROID_KEYSTORE* environment variables used by the GitHub release build.
+    // Every release must be signed with the same key, or Android refuses to
+    // install it over the previous version.
+    def ksProps = new Properties()
+    def ksFile = rootProject.file('keystore.properties')
+    if (ksFile.exists()) ksFile.withInputStream { ksProps.load(it) }
+    def ksPath = ksProps['storeFile'] ?: System.getenv('JAGDROID_KEYSTORE')
+    signingConfigs {
+        release {
+            if (ksPath) {
+                storeFile file(ksPath)
+                storePassword ksProps['storePassword'] ?: System.getenv('JAGDROID_KEYSTORE_PASSWORD')
+                keyAlias ksProps['keyAlias'] ?: System.getenv('JAGDROID_KEY_ALIAS')
+                keyPassword ksProps['keyPassword'] ?: System.getenv('JAGDROID_KEY_PASSWORD')
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // Without the release key (a fresh checkout), fall back to the debug key so it still builds.
+            signingConfig ksPath ? signingConfigs.release : signingConfigs.debug
+        }
+        debug {
+            // Keep native code optimised even in debug builds; the emulator is unusable at -O0.
+            externalNativeBuild { cmake { arguments '-DCMAKE_BUILD_TYPE=Release' } }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- JagDroid launcher foreground: a slanted "J" over a scanline bar, in the 108dp adaptive grid. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#E4002B" android:pathData="M30,68 h48 v5 h-48 z" />
+    <path android:fillColor="#E4002B" android:pathData="M30,76 h48 v2.5 h-48 z" />
+    <path android:fillColor="#F2F2F5"
+        android:pathData="M58,30 h14 l-7,26 c-2.6,9.4 -8.6,13 -17,13 c-6,0 -10,-2 -12.5,-5.5 l6,-7 c1.6,2 3.6,3.2 6.2,3.2 c3.4,0 5.4,-1.8 6.6,-6.2 z" />
+</vector>

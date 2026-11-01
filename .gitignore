@@ -1,0 +1,27 @@
+# Build output
+/build/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/.gradle/
+android/local.properties
+*.apk
+*.aab
+
+# Never commit games, BIOS images or signing keys
+*.j64
+*.jag
+*.rom
+*.bin
+*.cue
+*.iso
+*.cdi
+*.zip
+*.keystore
+*.jks
+keystore.properties
+
+# Scratch
+*.ppm
+*.wav
+.DS_Store

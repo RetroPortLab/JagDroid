@@ -1,0 +1,629 @@
+// JagDroid - Android glue: emulation thread, ANativeWindow video, AAudio sound,
+// game saves (cartridge EEPROM), save states and scanline display modes.
+// Video is copied straight into the window buffer and scaled by the display
+// hardware, so no GL/Vulkan driver (stock or Turnip) is involved at all.
+#include <jni.h>
+#include <android/log.h>
+#include <android/native_window_jni.h>
+#include <aaudio/AAudio.h>
+#include <zlib.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+#include <time.h>
+#include <unistd.h>
+#include <map>
+#include <cmath>
+#include <dlfcn.h>
+#include <android/hardware_buffer.h>
+#include "jaguar.h"
+#include "zipfile.h"
+
+#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "JagDroid", __VA_ARGS__)
+
+namespace {
+jag::Jaguar* g_emu = nullptr;
+std::mutex g_emuLock;              // held while a frame runs; save/load states take it too
+std::string g_error;
+std::thread g_thread;
+std::atomic<bool> g_run{false};
+std::atomic<bool> g_paused{false};
+std::atomic<uint32_t> g_buttons{0};
+std::atomic<float> g_fps{0.f};     // emulated frames per second, measured over ~0.5 s
+std::atomic<int> g_scanlines{0};   // 0 off, 1 light, 2 strong, 3 LCD grid
+std::atomic<bool> g_smoothShade{false};   // high-precision Gouraud shading
+std::atomic<int> g_renderScale{1};        // 1 or 2
+std::vector<uint32_t> g_hiFrame;          // enhanced picture when either is on
+std::vector<uint32_t> g_stage;            // final SDR picture, before it goes to the window
+std::atomic<bool> g_hdr{false};           // HDR output requested
+std::atomic<float> g_hdrPeak{3.0f};       // brightest highlight, as a multiple of normal white
+std::atomic<bool> g_hdrFailed{false};     // the screen or driver refused the HDR buffer format
+bool g_winHdr = false;                    // format the window is currently set up for
+bool g_pal = false;                // region chosen in the menu; applied when a game loads
+std::string g_eepromPath;          // where this game's save chip lives
+
+std::mutex g_winLock;
+ANativeWindow* g_window = nullptr;
+int g_winW = 0, g_winH = 0;
+
+AAudioStream* g_stream = nullptr;
+int g_streamRate = 0;
+
+void closeAudio() {
+    if (g_stream) { AAudioStream_requestStop(g_stream); AAudioStream_close(g_stream); g_stream = nullptr; }
+    g_streamRate = 0;
+}
+
+void openAudio(int rate) {
+    closeAudio();
+    AAudioStreamBuilder* b = nullptr;
+    if (AAudio_createStreamBuilder(&b) != AAUDIO_OK) return;
+    AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_I16);
+    AAudioStreamBuilder_setChannelCount(b, 2);
+    AAudioStreamBuilder_setSampleRate(b, rate);
+    AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    if (AAudioStreamBuilder_openStream(b, &g_stream) == AAUDIO_OK) {
+        int32_t burst = AAudioStream_getFramesPerBurst(g_stream);
+        // About 100 ms of slack so a slow frame doesn't empty the buffer (crackle).
+        int32_t want = std::max(burst * 8, rate / 10);
+        AAudioStream_setBufferSizeInFrames(g_stream, std::min(want, AAudioStream_getBufferCapacityInFrames(g_stream)));
+        AAudioStream_requestStart(g_stream);
+        g_streamRate = rate;
+        LOG("audio %d Hz, burst %d", AAudioStream_getSampleRate(g_stream), burst);
+    } else {
+        g_stream = nullptr;
+    }
+    AAudioStreamBuilder_delete(b);
+}
+
+// Darken a pixel to `pct` percent (pixels are RGBA, R in the low byte).
+// Each channel is scaled on its own: dividing red and blue packed together
+// let blue's remainder spill into red and tinted scanlines pink.
+inline uint32_t shade(uint32_t p, uint32_t pct) {
+    const uint32_t k = pct * 256 / 100;   // 8.8 fixed-point factor
+    uint32_t r = ((p & 0xFF) * k) >> 8, g = (((p >> 8) & 0xFF) * k) >> 8, b = (((p >> 16) & 0xFF) * k) >> 8;
+    return 0xFF000000u | (b << 16) | (g << 8) | r;
+}
+
+// Copy the frame into the window. With scanlines on, each emulated line becomes
+// three window lines whose brightness falls off on the third, so the display's
+// scaler draws dark gaps between lines like a CRT. The LCD grid also triples the
+// width and darkens every third column.
+// ---------------------------------------------------------------- HDR --
+// The Jaguar's picture is ordinary SDR. In HDR mode it goes to the screen as
+// linear extended-range light (scRGB, half floats), where 1.0 is normal white:
+// everything up to mid-bright stays as it was, and the brightest part of the
+// range is stretched up to the peak, so explosions, lasers and stars stand
+// out. Scanlines dim the picture, so their lost brightness is put back too.
+namespace hdr {
+float toLinear[256];
+bool tablesReady = false;
+void buildTables() {
+    for (int i = 0; i < 256; i++) {
+        float c = i / 255.f;
+        toLinear[i] = c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+    tablesReady = true;
+}
+using SetDataSpace = int32_t (*)(ANativeWindow*, int32_t);
+SetDataSpace setDataSpace() {   // API 28; looked up so the app still runs on 26-27
+    static SetDataSpace fn = (SetDataSpace)dlsym(RTLD_DEFAULT, "ANativeWindow_setBuffersDataSpace");
+    return fn;
+}
+const int32_t DATASPACE_SCRGB_LINEAR = 406913024;   // ADATASPACE_SCRGB_LINEAR
+const int32_t DATASPACE_UNKNOWN = 0;
+
+// Expand the top of the range: identity below the knee, then a curve that
+// meets it smoothly and reaches `peak` at full white.
+inline float expand(float l, float peak) {
+    const float k = 0.55f;
+    if (l <= k) return l;
+    float t = (l - k) / (1.f - k);
+    return l + (peak - 1.f) * t * t;
+}
+
+void convertRow(const uint32_t* s, __fp16* d, int n, float peak, float gain) {
+    for (int x = 0; x < n; x++) {
+        uint32_t p = s[x];
+        float r = toLinear[p & 0xFF], g = toLinear[(p >> 8) & 0xFF], b = toLinear[(p >> 16) & 0xFF];
+        float l = 0.2126f * r + 0.7152f * g + 0.0722f * b;
+        float f = gain * (l > 1e-5f ? expand(l, peak) / l : 1.f);
+        d[4 * x] = (__fp16)(r * f); d[4 * x + 1] = (__fp16)(g * f); d[4 * x + 2] = (__fp16)(b * f); d[4 * x + 3] = (__fp16)1.f;
+    }
+}
+} // namespace hdr
+
+void present() {
+    std::lock_guard<std::mutex> lk(g_winLock);
+    if (!g_window) return;
+    const int mode = g_scanlines.load();
+    const int scale = g_renderScale.load() == 2 ? 2 : 1;
+    const bool enhanced = g_emu->shadeTracking();
+    const int w = g_emu->frameWidth() * scale, h = g_emu->frameHeight() * scale;
+    // Source picture: the emulated frame, or the enhanced one built from it.
+    const uint32_t* src = g_emu->framebuffer();
+    int srcStride = jag::Jaguar::MAX_W;
+    if (enhanced || scale > 1) {
+        g_hiFrame.resize((size_t)w * h);
+        g_emu->renderSmooth(scale, g_hiFrame.data());
+        src = g_hiFrame.data(); srcStride = w;
+    }
+    // At 1x each emulated line becomes 3 output rows for scanlines; at 2x the
+    // picture already has 2 rows per line, so the second one is the dark row.
+    const int sx = (mode == 3 && scale == 1) ? 3 : 1, sy = (mode == 0 || scale == 2) ? 1 : 3;
+    const int ww = w * sx, wh = h * sy;
+    g_stage.resize((size_t)ww * wh);
+    uint32_t* dst = g_stage.data();
+    const int stride = ww;
+    float lineAvg = 1.f;   // average brightness the scanlines leave, for HDR to restore
+    if (mode == 0) {
+        for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * stride, src + (size_t)y * srcStride, w * 4);
+    } else if (scale == 2) {
+        static const uint32_t darkPct[4] = {100, 70, 40, 55};
+        lineAvg = (100.f + darkPct[mode]) / 200.f;
+        if (mode == 3) lineAvg = (1.f + 0.6f + 0.55f + 0.35f) / 4.f;
+        for (int y = 0; y < h; y++) {
+            const uint32_t* s = src + (size_t)y * srcStride;
+            uint32_t* d = dst + (size_t)y * stride;
+            if (!(y & 1)) {
+                if (mode == 3) for (int x = 0; x < w; x++) d[x] = (x & 1) ? shade(s[x], 60) : s[x];
+                else memcpy(d, s, w * 4);
+            } else {
+                for (int x = 0; x < w; x++) d[x] = shade(s[x], (mode == 3 && (x & 1)) ? 35 : darkPct[mode]);
+            }
+        }
+    } else {
+        // Brightness of the three output rows per emulated line.
+        static const uint32_t rowPct[4][3] = {{100, 100, 100}, {100, 95, 60}, {100, 85, 30}, {100, 100, 55}};
+        lineAvg = (rowPct[mode][0] + rowPct[mode][1] + rowPct[mode][2]) / 300.f;
+        if (mode == 3) lineAvg *= (2.f + 0.6f) / 3.f;
+        for (int y = 0; y < h; y++) {
+            const uint32_t* s = src + (size_t)y * srcStride;
+            for (int r = 0; r < 3; r++) {
+                uint32_t* d = dst + (size_t)(y * 3 + r) * stride;
+                const uint32_t pct = rowPct[mode][r];
+                if (mode == 3) {
+                    for (int x = 0; x < w; x++) {
+                        uint32_t p = pct == 100 ? s[x] : shade(s[x], pct);
+                        d[x * 3] = p; d[x * 3 + 1] = p; d[x * 3 + 2] = shade(p, 60);
+                    }
+                } else if (pct == 100) {
+                    memcpy(d, s, w * 4);
+                } else {
+                    for (int x = 0; x < w; x++) d[x] = shade(s[x], pct);
+                }
+            }
+        }
+    }
+
+    // Hand it to the window, as SDR bytes or HDR half floats.
+    bool wantHdr = g_hdr.load() && !g_hdrFailed.load() && hdr::setDataSpace();
+    if (ww != g_winW || wh != g_winH || wantHdr != g_winHdr) {
+        int32_t fmt = wantHdr ? AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT : WINDOW_FORMAT_RGBA_8888;
+        if (ANativeWindow_setBuffersGeometry(g_window, ww, wh, fmt) != 0 && wantHdr) {
+            LOG("HDR buffer format refused; staying in SDR");
+            g_hdrFailed = true; wantHdr = false;
+            ANativeWindow_setBuffersGeometry(g_window, ww, wh, WINDOW_FORMAT_RGBA_8888);
+        }
+        if (hdr::setDataSpace()) hdr::setDataSpace()(g_window, wantHdr ? hdr::DATASPACE_SCRGB_LINEAR : hdr::DATASPACE_UNKNOWN);
+        g_winW = ww; g_winH = wh; g_winHdr = wantHdr;
+    }
+    ANativeWindow_Buffer buf;
+    if (ANativeWindow_lock(g_window, &buf, nullptr) != 0) {
+        if (g_winHdr) { LOG("HDR buffer lock failed; staying in SDR"); g_hdrFailed = true; g_winW = 0; }
+        return;
+    }
+    const int rows = std::min(wh, (int)buf.height), cols = std::min(ww, (int)buf.width);
+    if (g_winHdr && buf.format == AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT) {
+        if (!hdr::tablesReady) hdr::buildTables();
+        const float peak = g_hdrPeak.load(), gain = 1.f / lineAvg;
+        __fp16* out = static_cast<__fp16*>(buf.bits);
+        for (int y = 0; y < rows; y++) hdr::convertRow(dst + (size_t)y * stride, out + (size_t)y * buf.stride * 4, cols, peak, gain);
+    } else {
+        uint32_t* out = static_cast<uint32_t*>(buf.bits);
+        for (int y = 0; y < rows; y++) memcpy(out + (size_t)y * buf.stride, dst + (size_t)y * stride, cols * 4);
+    }
+    ANativeWindow_unlockAndPost(g_window);
+}
+
+// Shading data is needed for either enhancement. Caller holds g_emuLock.
+void applyEnhancementsLocked() {
+    if (g_emu) g_emu->setShadeTracking(g_smoothShade.load() || g_renderScale.load() == 2);
+}
+
+bool readFile(const std::string& path, std::vector<uint8_t>& out) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    out.resize(n > 0 ? (size_t)n : 0);
+    bool ok = n <= 0 || fread(out.data(), 1, out.size(), f) == out.size();
+    fclose(f);
+    return ok;
+}
+
+bool writeFileAtomic(const std::string& path, const uint8_t* data, size_t n) {
+    std::string tmp = path + ".tmp";
+    FILE* f = fopen(tmp.c_str(), "wb");
+    if (!f) return false;
+    bool ok = fwrite(data, 1, n, f) == n;
+    ok = (fclose(f) == 0) && ok;
+    return ok && rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+// Write the save chip to disk if the game changed it. Caller holds g_emuLock.
+void flushEepromLocked() {
+    if (!g_emu || g_eepromPath.empty() || !g_emu->eepromDirty) return;
+    uint8_t e[128];
+    g_emu->getEeprom(e);
+    if (writeFileAtomic(g_eepromPath, e, sizeof e)) g_emu->eepromDirty = false;
+    else LOG("could not write %s", g_eepromPath.c_str());
+}
+
+void emuLoop() {
+    using clk = std::chrono::steady_clock;
+    const auto frameTime = std::chrono::nanoseconds((long long)(1e9 / g_emu->refreshHz()));  // 59.94 or 50 Hz
+    auto next = clk::now();
+    auto fpsStart = clk::now();
+    int fpsFrames = 0, sinceFlush = 0;
+    g_fps = 0.f;
+    while (g_run) {
+        if (g_paused) { std::this_thread::sleep_for(std::chrono::milliseconds(16)); next = fpsStart = clk::now(); fpsFrames = 0; continue; }
+        {
+            std::lock_guard<std::mutex> lk(g_emuLock);
+            g_emu->setButtons(g_buttons.load());
+            g_emu->runFrame();
+            present();
+            // Games write their save chip a few bits at a time; wait until it has
+            // been quiet for a couple of seconds' worth of checks, then save.
+            if (++sinceFlush >= 120) { sinceFlush = 0; flushEepromLocked(); }
+        }
+        if (++fpsFrames >= 15) {
+            auto t = clk::now();
+            double secs = std::chrono::duration<double>(t - fpsStart).count();
+            if (secs > 0.25) { g_fps = (float)(fpsFrames / secs); fpsFrames = 0; fpsStart = t; }
+        }
+
+        int rate = g_emu->audioRate();
+        if (rate != g_streamRate && rate > 4000 && rate < 100000) openAudio(rate);
+        if (g_stream && !g_emu->audio.empty()) {
+            int frames = (int)g_emu->audio.size() / 2;
+            // Wait briefly for room rather than dropping samples: a full buffer
+            // means emulation is running slightly ahead of the sound card, and
+            // dropped chunks are heard as clicks and distortion.
+            AAudioStream_write(g_stream, g_emu->audio.data(), frames, 20 * 1000 * 1000);
+        }
+
+        next += frameTime;
+        auto now = clk::now();
+        if (next > now) std::this_thread::sleep_until(next);
+        else if (now - next > std::chrono::milliseconds(100)) next = now;  // fell behind: resync
+    }
+    closeAudio();
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    flushEepromLocked();
+}
+
+void stopThread() {
+    g_run = false;
+    if (g_thread.joinable()) g_thread.join();
+}
+
+std::vector<uint8_t> toVec(JNIEnv* env, jbyteArray arr) {
+    std::vector<uint8_t> v;
+    if (!arr) return v;
+    jsize n = env->GetArrayLength(arr);
+    v.resize(n);
+    env->GetByteArrayRegion(arr, 0, n, reinterpret_cast<jbyte*>(v.data()));
+    return v;
+}
+
+std::string toStr(JNIEnv* env, jstring s) {
+    if (!s) return std::string();
+    const char* c = env->GetStringUTFChars(s, nullptr);
+    std::string r(c ? c : "");
+    if (c) env->ReleaseStringUTFChars(s, c);
+    return r;
+}
+} // namespace
+
+extern "C" {
+
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_loadGame(JNIEnv* env, jclass, jbyteArray rom, jbyteArray bios) {
+    stopThread();
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    delete g_emu;
+    g_emu = new jag::Jaguar();
+    g_emu->pal = g_pal;
+    g_error.clear();
+    if (bios) {
+        if (!g_emu->loadBios(toVec(env, bios), &g_error)) return JNI_FALSE;
+    }
+    if (!g_emu->loadCart(toVec(env, rom), &g_error)) return JNI_FALSE;
+    std::vector<uint8_t> e;
+    if (!g_eepromPath.empty() && readFile(g_eepromPath, e)) g_emu->setEeprom(e.data(), e.size());
+    g_emu->reset();
+    applyEnhancementsLocked();
+    return JNI_TRUE;
+}
+
+// A Jaguar CD game: the CD BIOS runs from the cartridge slot and the disc image
+// is a cue sheet whose track files Java has opened (Android storage hands out
+// file descriptors, not paths).
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_loadDisc(JNIEnv* env, jclass, jbyteArray cdBios, jstring cue,
+                                                  jobjectArray names, jintArray fds) {
+    stopThread();
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    delete g_emu;
+    g_emu = new jag::Jaguar();
+    g_emu->pal = g_pal;
+    g_error.clear();
+    if (!g_emu->loadCart(toVec(env, cdBios), &g_error)) { g_error = "CD BIOS: " + g_error; return JNI_FALSE; }
+
+    std::map<std::string, int> files;
+    jsize n = env->GetArrayLength(names);
+    jint* fd = env->GetIntArrayElements(fds, nullptr);
+    for (jsize i = 0; i < n; i++) {
+        auto js = (jstring)env->GetObjectArrayElement(names, i);
+        const char* c = env->GetStringUTFChars(js, nullptr);
+        files[c] = fd[i];
+        env->ReleaseStringUTFChars(js, c);
+        env->DeleteLocalRef(js);
+    }
+    env->ReleaseIntArrayElements(fds, fd, JNI_ABORT);
+
+    const char* cueText = env->GetStringUTFChars(cue, nullptr);
+    std::string text = cueText;
+    env->ReleaseStringUTFChars(cue, cueText);
+    auto image = std::make_unique<jag::CdImage>();
+    bool ok = image->loadText(text, [&](const std::string& name) {
+        jag::CdImage::Opened o;
+        auto it = files.find(name);
+        if (it == files.end() || it->second < 0) return o;
+        int d = dup(it->second);
+        o.fp = d < 0 ? nullptr : fdopen(d, "rb");
+        return o;
+    }, &g_error);
+    if (!ok) return JNI_FALSE;
+    g_emu->insertDisc(std::move(image));
+    std::vector<uint8_t> e;
+    if (!g_eepromPath.empty() && readFile(g_eepromPath, e)) g_emu->setEeprom(e.data(), e.size());
+    g_emu->reset();
+    applyEnhancementsLocked();
+    return JNI_TRUE;
+}
+
+// ---------------------------------------------------------------- zips --
+std::atomic<float> g_unpackProgress{-1.f};   // 0..1 while a zipped disc unpacks, -1 otherwise
+std::atomic<bool> g_unpackCancel{false};
+
+static FILE* dupOpen(int fd) {
+    int d = dup(fd);
+    if (d < 0) return nullptr;
+    FILE* f = fdopen(d, "rb");
+    if (!f) close(d);
+    return f;
+}
+
+// Names of the files inside a zip (for sorting zips into cartridges and discs).
+JNIEXPORT jobjectArray JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_zipEntries(JNIEnv* env, jclass, jint fd) {
+    jclass str = env->FindClass("java/lang/String");
+    FILE* f = dupOpen(fd);
+    jag::ZipArchive zip; std::string err;
+    if (!f || !zip.open(f, &err)) { if (f) fclose(f); return env->NewObjectArray(0, str, nullptr); }
+    auto& list = zip.entries();
+    jobjectArray out = env->NewObjectArray((jsize)list.size(), str, nullptr);
+    for (size_t i = 0; i < list.size(); i++) {
+        jstring s = env->NewStringUTF(list[i].name.c_str());
+        env->SetObjectArrayElement(out, (jsize)i, s);
+        env->DeleteLocalRef(s);
+    }
+    fclose(f);
+    return out;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_loadZipGame(JNIEnv* env, jclass, jint fd, jbyteArray bios) {
+    std::vector<uint8_t> rom;
+    std::string err;
+    FILE* f = dupOpen(fd);
+    bool ok = f && jag::readCartFromZip(f, rom, nullptr, &err);
+    if (f) fclose(f);
+    if (!ok) { std::lock_guard<std::mutex> lk(g_emuLock); g_error = err.empty() ? "Couldn't read the zip" : err; return JNI_FALSE; }
+    jbyteArray arr = env->NewByteArray((jsize)rom.size());
+    env->SetByteArrayRegion(arr, 0, (jsize)rom.size(), (const jbyte*)rom.data());
+    jboolean r = Java_com_retroportlab_jagdroid_NativeLib_loadGame(env, nullptr, arr, bios);
+    env->DeleteLocalRef(arr);
+    return r;
+}
+
+// A zipped Jaguar CD (cue + bins). Blocking: call it off the UI thread and
+// poll unpackProgress() for compressed discs, which are unpacked to cacheDir.
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_loadZipDisc(JNIEnv* env, jclass, jbyteArray cdBios, jint fd, jstring cacheDir) {
+    stopThread();
+    const char* cd = env->GetStringUTFChars(cacheDir, nullptr);
+    std::string cache = cd;
+    env->ReleaseStringUTFChars(cacheDir, cd);
+    std::vector<uint8_t> biosData = toVec(env, cdBios);
+    g_unpackCancel = false;
+    g_unpackProgress = 0.f;
+    auto image = std::make_unique<jag::CdImage>();
+    std::string err;
+    bool ok = image->loadZip([fd]() { return dupOpen(fd); }, cache,
+                             [](double f) { g_unpackProgress = (float)f; return !g_unpackCancel.load(); }, &err);
+    g_unpackProgress = -1.f;
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    if (!ok) { g_error = err; return JNI_FALSE; }
+    delete g_emu;
+    g_emu = new jag::Jaguar();
+    g_emu->pal = g_pal;
+    g_error.clear();
+    if (!g_emu->loadCart(biosData, &g_error)) { g_error = "CD BIOS: " + g_error; return JNI_FALSE; }
+    g_emu->insertDisc(std::move(image));
+    std::vector<uint8_t> e;
+    if (!g_eepromPath.empty() && readFile(g_eepromPath, e)) g_emu->setEeprom(e.data(), e.size());
+    g_emu->reset();
+    applyEnhancementsLocked();
+    return JNI_TRUE;
+}
+
+JNIEXPORT jfloat JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_unpackProgress(JNIEnv*, jclass) { return g_unpackProgress.load(); }
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_cancelUnpack(JNIEnv*, jclass) { g_unpackCancel = true; }
+
+JNIEXPORT jstring JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_lastError(JNIEnv* env, jclass) {
+    return env->NewStringUTF(g_error.c_str());
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setSurface(JNIEnv* env, jclass, jobject surface) {
+    std::lock_guard<std::mutex> lk(g_winLock);
+    if (g_window) { ANativeWindow_release(g_window); g_window = nullptr; }
+    if (surface) g_window = ANativeWindow_fromSurface(env, surface);
+    g_winW = g_winH = 0;
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_start(JNIEnv*, jclass) {
+    if (!g_emu || g_run) return;
+    g_paused = false;
+    g_run = true;
+    g_thread = std::thread(emuLoop);
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setPaused(JNIEnv*, jclass, jboolean p) {
+    g_paused = p;
+    if (p) { std::lock_guard<std::mutex> lk(g_emuLock); flushEepromLocked(); }
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_stop(JNIEnv*, jclass) { stopThread(); }
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_reset(JNIEnv*, jclass) {
+    bool was = g_run;
+    stopThread();
+    if (g_emu) g_emu->reset();
+    if (was) { g_run = true; g_thread = std::thread(emuLoop); }
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setButtons(JNIEnv*, jclass, jint mask) { g_buttons = (uint32_t)mask; }
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setPal(JNIEnv*, jclass, jboolean pal) { g_pal = pal; }
+
+JNIEXPORT jfloat JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_getFps(JNIEnv*, jclass) { return g_fps.load(); }
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setEnhancements(JNIEnv*, jclass, jboolean smoothShade, jint scale) {
+    g_smoothShade = smoothShade;
+    g_renderScale = scale == 2 ? 2 : 1;
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    applyEnhancementsLocked();
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setHdr(JNIEnv*, jclass, jboolean on, jfloat peak) {
+    g_hdr = on;
+    g_hdrPeak = std::max(1.f, std::min(8.f, (float)peak));
+    if (on) g_hdrFailed = false;   // try again if the user turns it back on
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_hdrActive(JNIEnv*, jclass) {
+    return g_hdr.load() && !g_hdrFailed.load() && hdr::setDataSpace() != nullptr;
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setScanlines(JNIEnv*, jclass, jint mode) {
+    g_scanlines = std::max(0, std::min(3, (int)mode));
+    std::lock_guard<std::mutex> lk(g_winLock);
+    g_winW = g_winH = 0;   // window buffer size changes with the mode
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setEepromPath(JNIEnv* env, jclass, jstring path) {
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    g_eepromPath = toStr(env, path);
+}
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_flushSave(JNIEnv*, jclass) {
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    flushEepromLocked();
+}
+
+// Save states are stored zlib-compressed: "JDZ1", original size, compressed data.
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_saveState(JNIEnv* env, jclass, jstring path) {
+    std::vector<uint8_t> st;
+    {
+        std::lock_guard<std::mutex> lk(g_emuLock);
+        if (!g_emu) return JNI_FALSE;
+        st = g_emu->saveState();
+    }
+    uLongf clen = compressBound(st.size());
+    std::vector<uint8_t> out(8 + clen);
+    memcpy(out.data(), "JDZ1", 4);
+    uint32_t n = (uint32_t)st.size();
+    memcpy(out.data() + 4, &n, 4);
+    if (compress2(out.data() + 8, &clen, st.data(), st.size(), 6) != Z_OK) { g_error = "Could not compress the save state"; return JNI_FALSE; }
+    out.resize(8 + clen);
+    if (!writeFileAtomic(toStr(env, path), out.data(), out.size())) { g_error = "Could not write the save state"; return JNI_FALSE; }
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_loadState(JNIEnv* env, jclass, jstring path) {
+    std::vector<uint8_t> in;
+    if (!readFile(toStr(env, path), in) || in.size() < 8 || memcmp(in.data(), "JDZ1", 4) != 0) {
+        g_error = "No save state in this slot"; return JNI_FALSE;
+    }
+    uint32_t n; memcpy(&n, in.data() + 4, 4);
+    if (n > 64u * 1024 * 1024) { g_error = "Save state is damaged"; return JNI_FALSE; }
+    std::vector<uint8_t> st(n);
+    uLongf dlen = n;
+    if (uncompress(st.data(), &dlen, in.data() + 8, in.size() - 8) != Z_OK || dlen != n) {
+        g_error = "Save state is damaged"; return JNI_FALSE;
+    }
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    if (!g_emu) return JNI_FALSE;
+    std::string err;
+    if (!g_emu->loadState(st, &err)) { g_error = err; return JNI_FALSE; }
+    return JNI_TRUE;
+}
+
+// The current picture at half size, for save-slot thumbnails: [width, height, ARGB...].
+JNIEXPORT jintArray JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_getThumbnail(JNIEnv* env, jclass) {
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    if (!g_emu) return nullptr;
+    int w = g_emu->frameWidth() / 2, h = g_emu->frameHeight() / 2;
+    std::vector<jint> px(2 + (size_t)w * h);
+    px[0] = w; px[1] = h;
+    const uint32_t* fb = g_emu->framebuffer();
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < w; x++) {
+            uint32_t p = fb[(size_t)(y * 2) * jag::Jaguar::MAX_W + x * 2];   // RGBA, R low
+            px[2 + y * w + x] = (jint)(0xFF000000u | ((p & 0xFF) << 16) | (p & 0xFF00) | ((p >> 16) & 0xFF));
+        }
+    jintArray arr = env->NewIntArray((jsize)px.size());
+    env->SetIntArrayRegion(arr, 0, (jsize)px.size(), px.data());
+    return arr;
+}
+
+} // extern "C"
