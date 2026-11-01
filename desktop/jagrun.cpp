@@ -91,6 +91,18 @@ int main(int argc, char** argv) {
         for (auto& h : holds) if (f >= h.from && f < h.to) m |= h.mask;
         j->setButtons(m);
         j->runFrame();
+        if (const char* db = getenv("JAG_DUMPBUF")) {   // "frame:addr(hex):widthPixels:height:file.ppm" 16-bit CRY/RGB buffer
+            long bf; unsigned ba; int bw, bh; char bp[200];
+            if (sscanf(db, "%ld:%x:%d:%d:%199s", &bf, &ba, &bw, &bh, bp) == 5 && f == bf) {
+                FILE* o = fopen(bp, "wb"); fprintf(o, "P6\n%d %d\n255\n", bw, bh);
+                for (int y = 0; y < bh; y++) for (int x = 0; x < bw; x++) {
+                    uint16_t v = j->read16(ba + (y * bw + x) * 2);
+                    uint32_t px = j->cryTable[v];
+                    fputc(px & 255, o); fputc((px >> 8) & 255, o); fputc((px >> 16) & 255, o);
+                }
+                fclose(o);
+            }
+        }
         if (getenv("JAG_RATELOG")) {   // report audio-rate changes
             static int lastRate = -1; int r = j->audioRate();
             if (r != lastRate) { fprintf(stderr, "[rate] frame %d: %d Hz (SMODE=%04X SCLK=%04X)\n", f, r, j->jerryReg16(0x1D4 + 0 + 0x0) , 0); lastRate = r; }
