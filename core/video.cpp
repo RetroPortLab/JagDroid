@@ -93,6 +93,9 @@ static inline void writePhrase(Jaguar* j, uint32_t a, uint64_t v) {
 
 // Draw one line of a bitmap object into the line buffer.
 static const bool g_skipRmw = getenv("JAG_SKIPRMW") != nullptr;   // diagnostics only
+// JAG_PIXWHO="frame:x:vc": report every object pixel written at that line-buffer x
+static int g_probeX = -1, g_probeVc = -1; static long g_probeF = -1;
+static const bool g_probeInit = [] { if (const char* p = getenv("JAG_PIXWHO")) sscanf(p, "%ld:%d:%d", &g_probeF, &g_probeX, &g_probeVc); return true; }();
 static void drawBitmapLine(Jaguar* j, uint32_t data, uint64_t p1, int hscale /* 0x20 = 1.0 */) {
     int xpos = (int)(p1 & 0xFFF); if (xpos & 0x800) xpos -= 0x1000;
     int depth = (p1 >> 12) & 7;
@@ -142,7 +145,11 @@ static void drawBitmapLine(Jaguar* j, uint32_t data, uint64_t p1, int hscale /* 
         }
         uint16_t val, info = 0;
         if (bpp <= 8) {
-            uint32_t ci = (bpp == 8) ? pix : ((uint32_t)index << 1) + pix;
+            // Below 8 bpp the pixel fills the low bits of the CLUT address and
+            // INDEX the rest (1 bpp: bits 7-1, 2 bpp: 7-2, 4 bpp: 7-4); adding
+            // the two picked the wrong colours whenever INDEX had low bits set
+            // (Worms' title screen uses INDEX 12 with 4 bpp art).
+            uint32_t ci = (bpp == 8) ? pix : ((((uint32_t)index << 1) & (0xFFu << bpp)) | pix);
             ci &= 0xFF;
             val = (uint16_t)(clut[ci * 2] << 8 | clut[ci * 2 + 1]);
         } else {
@@ -151,6 +158,8 @@ static void drawBitmapLine(Jaguar* j, uint32_t data, uint64_t p1, int hscale /* 
         }
         for (int x = x0; x < x1; x++) {
             if (x < 0 || x >= 720) continue;
+            if (j->verbose && g_probeX >= 0 && x == g_probeX && j->halfLine == g_probeVc && (long)j->frameCount == g_probeF)
+                fprintf(stderr, "[pix] data=%06X p1=%016llX pix=%u val=%04X rmw=%d before=%04X\n", data, (unsigned long long)p1, pix, val, rmw, j->lineBuf[x]);
             if (!rmw) j->lineFrac[x] = info;
             if (rmw) {
                 // Read-modify-write: each CRY colour nibble gets the object's
@@ -195,9 +204,13 @@ void Jaguar::opRenderLine(int vc) {
             if (verbose && getenv("JAG_OPDUMPVC") && vc == atoi(getenv("JAG_OPDUMPVC")) && getenv("JAG_OPDUMPF") && (long)frameCount == atol(getenv("JAG_OPDUMPF")))
                 fprintf(stderr, "[op vc=%d] %06X type=%d y=%d h=%d data=%06X x=%d depth=%d iw=%d dw=%d pitch=%d first=%d idx=%d refl=%d rmw=%d trans=%d rel=%d p2=%06X\n", vc, addr, type, ypos, height, data,
                         (int)(p1 & 0xFFF), (int)((p1 >> 12) & 7), (int)((p1 >> 28) & 0x3FF), dwidth, (int)((p1 >> 15) & 7), (int)((p1 >> 49) & 0x3F), (int)((p1 >> 38) & 0x7F), (int)((p1 >> 45) & 1), (int)((p1 >> 46) & 1), (int)((p1 >> 47) & 1), (int)((p1 >> 48) & 1), type == 1 ? (unsigned)(readPhrase(this, addr + 16) & 0xFFFFFF) : 0u);
+            static const char* opSkip = getenv("JAG_OPSKIP");   // diagnostics: "addr,addr" objects not drawn
+            bool skipDraw = false;
+            if (opSkip) { char b[16]; snprintf(b, sizeof b, "%06X", addr); skipDraw = strstr(opSkip, b) != nullptr; }
             if (vc >= ypos && height > 0) {
+                if (skipDraw) { /* still advance below */ }
                 if (type == 0) {
-                    drawBitmapLine(this, data, p1, 0x20);
+                    if (!skipDraw) drawBitmapLine(this, data, p1, 0x20);
                     data += (uint32_t)dwidth * 8;
                     height--;
                 } else {

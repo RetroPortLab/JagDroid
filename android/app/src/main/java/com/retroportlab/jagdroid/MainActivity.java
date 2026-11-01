@@ -116,6 +116,7 @@ public class MainActivity extends Activity {
         setContentView(root);
         hideSystemUi();
         NativeLib.setScanlines(prefs.getInt("scanlines", 0));
+        NativeLib.setCropOverscan(prefs.getBoolean("cropOverscan", true));
         Uri launched = getIntent() != null ? getIntent().getData() : null;
         if (launched != null) startGame(launched, null); else showLibrary();
     }
@@ -440,6 +441,8 @@ public class MainActivity extends Activity {
         list.addView(sectionTitle("Display"));
         list.addView(cycleRow("Scanlines", "CRT-style lines between the picture's rows", "scanlines", SCANLINE_NAMES,
                 NativeLib::setScanlines));
+        list.addView(toggleRow("Crop overscan", "Hide the picture's outer border, which a TV would cut off (some games leave junk there)",
+                "cropOverscan", true, () -> NativeLib.setCropOverscan(prefs.getBoolean("cropOverscan", true))));
         list.addView(toggleRow("Smooth Gouraud shading", "Full-precision colour on smoothly shaded 3D surfaces (removes banding)",
                 "smoothShade", false, this::applyEnhancements));
         list.addView(cycleRow("Render scale", "2x doubles the picture and smooths shaded surfaces between pixels; "

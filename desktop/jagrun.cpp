@@ -94,7 +94,8 @@ int main(int argc, char** argv) {
         if (const char* df = getenv("JAG_DUMPFRAMES")) {   // "from:to:prefix" writes each frame as prefix_NNNNN.ppm
             static long dfrom = -1, dto = -1; static char pre[256];
             if (dfrom < 0) sscanf(df, "%ld:%ld:%255s", &dfrom, &dto, pre);
-            if (f >= dfrom && f <= dto) {
+            static int dstep = getenv("JAG_DUMPSTEP") ? atoi(getenv("JAG_DUMPSTEP")) : 1;
+            if (f >= dfrom && f <= dto && (f - dfrom) % dstep == 0) {
                 char nm[300]; snprintf(nm, sizeof nm, "%s_%05d.ppm", pre, f);
                 if (FILE* o = fopen(nm, "wb")) {
                     int w = j->frameWidth(), h = j->frameHeight();

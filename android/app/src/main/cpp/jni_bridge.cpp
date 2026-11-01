@@ -38,6 +38,7 @@ std::atomic<float> g_fps{0.f};     // emulated frames per second, measured over 
 std::atomic<int> g_scanlines{0};   // 0 off, 1 light, 2 strong, 3 LCD grid
 std::atomic<bool> g_smoothShade{false};   // high-precision Gouraud shading
 std::atomic<int> g_renderScale{1};        // 1 or 2
+std::atomic<bool> g_cropOverscan{true};   // hide the border a TV would cut off
 std::vector<uint32_t> g_hiFrame;          // enhanced picture when either is on
 std::vector<uint32_t> g_stage;            // final SDR picture, before it goes to the window
 std::atomic<bool> g_hdr{false};           // HDR output requested
@@ -144,7 +145,7 @@ void present() {
     const int mode = g_scanlines.load();
     const int scale = g_renderScale.load() == 2 ? 2 : 1;
     const bool enhanced = g_emu->shadeTracking();
-    const int w = g_emu->frameWidth() * scale, h = g_emu->frameHeight() * scale;
+    int w = g_emu->frameWidth() * scale, h = g_emu->frameHeight() * scale;
     // Source picture: the emulated frame, or the enhanced one built from it.
     const uint32_t* src = g_emu->framebuffer();
     int srcStride = jag::Jaguar::MAX_W;
@@ -152,6 +153,13 @@ void present() {
         g_hiFrame.resize((size_t)w * h);
         g_emu->renderSmooth(scale, g_hiFrame.data());
         src = g_hiFrame.data(); srcStride = w;
+    }
+    // Overscan: games leave junk in the border a TV hides (Super Burnout's
+    // bottom rows, Troy Aikman's players walking off the field). Trim about
+    // 5% each side and 3% top and bottom, in whole emulated pixels.
+    if (g_cropOverscan.load()) {
+        const int cx = (g_emu->frameWidth() * 5 / 100) * scale, cy = (g_emu->frameHeight() * 3 / 100) * scale;
+        if (w > 2 * cx + 64 && h > 2 * cy + 64) { src += (size_t)cy * srcStride + cx; w -= 2 * cx; h -= 2 * cy; }
     }
     // At 1x each emulated line becomes 3 output rows for scanlines; at 2x the
     // picture already has 2 rows per line, so the second one is the dark row.
@@ -527,6 +535,9 @@ Java_com_retroportlab_jagdroid_NativeLib_setPal(JNIEnv*, jclass, jboolean pal) {
 
 JNIEXPORT jfloat JNICALL
 Java_com_retroportlab_jagdroid_NativeLib_getFps(JNIEnv*, jclass) { return g_fps.load(); }
+
+JNIEXPORT void JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_setCropOverscan(JNIEnv*, jclass, jboolean on) { g_cropOverscan = on; }
 
 JNIEXPORT void JNICALL
 Java_com_retroportlab_jagdroid_NativeLib_setEnhancements(JNIEnv*, jclass, jboolean smoothShade, jint scale) {

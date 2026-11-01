@@ -164,6 +164,7 @@ void Jaguar::blitterGo() {
     const bool zbuff = cmd & (1u << 13);
     const int zmode = (cmd >> 18) & 7;   // inhibit when source Z is: bit0 less, bit1 equal, bit2 greater
     const bool srcshade = cmd & (1u << 30);
+    const bool cmpdst = cmd & (1u << 25);
 
     Area a1 = decodeArea(R32(A1_BASE), R32(A1_FLAGS));
     Area a2 = decodeArea(R32(A2_BASE), R32(A2_FLAGS));
@@ -191,7 +192,11 @@ void Jaguar::blitterGo() {
 
     uint32_t count = R32(B_COUNT);
     int inner = count & 0xFFFF, outer = count >> 16;
-    if (inner == 0) inner = 0x10000;
+    // The inner counter stops when it reaches zero or wraps negative, so a
+    // count of 0 wraps on the first step: one write per row, not 65536.
+    // (Worms blits zero-width characters; treating 0 as 65536 sprayed six
+    // 64K-pixel rows over its title screen.)
+    if (inner == 0) inner = 1;
     if (outer == 0) outer = 1;
 
     const uint64_t patd = R64(B_PATD), srcd = R64(B_SRCD), dstd = R64(B_DSTD);
@@ -362,7 +367,16 @@ void Jaguar::blitterGo() {
                 out = (fromPhrase(patd, 16, dx) & 0xFF00) | ((iv >> 16) & 0xFF);
                 ivUsed = iv;
             }
-            if (dcompen && rawSrc == 0) inhibit = true;
+            if (dcompen) {
+                // The data comparator matches against the pattern register: the
+                // source pixel (or with CMPDST the destination) equal to PATD is
+                // not written. Most games key on 0; Brutal Sports keys its mud
+                // marks on $F0, which we drew as black boxes. Zero stays
+                // transparent too, as games rely on it with a stale PATD.
+                const uint32_t key = regData(patd, dx);
+                if (cmpdst) { if (dst == key) inhibit = true; }
+                else if (rawSrc == 0 || rawSrc == key) inhibit = true;
+            }
 
             // Z buffer
             uint32_t srcZ = 0, zaddr = 0;
