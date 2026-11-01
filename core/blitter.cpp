@@ -163,6 +163,7 @@ void Jaguar::blitterGo() {
     const bool dstenz = cmd & (1u << 4), dstwrz = cmd & (1u << 5);
     const bool zbuff = cmd & (1u << 13);
     const int zmode = (cmd >> 18) & 7;   // inhibit when source Z is: bit0 less, bit1 equal, bit2 greater
+    const bool srcshade = cmd & (1u << 30);
 
     Area a1 = decodeArea(R32(A1_BASE), R32(A1_FLAGS));
     Area a2 = decodeArea(R32(A2_BASE), R32(A2_FLAGS));
@@ -293,6 +294,29 @@ void Jaguar::blitterGo() {
             if (clipA1 && (x1 < 0 || y1 < 0 || x1 >= clipW || y1 >= clipH)) inhibit = true;
 
             uint32_t src = srcen ? readPix(this, srcA, sx, sy) : regData(srcd, dx);
+            const uint32_t rawSrc = src;   // transparency (DCOMPEN) tests the unshaded source
+            if (srcshade && !bcompen) {
+                // SRCSHADE adjusts each 16-bit CRY source pixel by IINC: bits 23-16
+                // (with the 16-bit fraction) are a signed intensity change, and the
+                // top byte shifts the colour, each nibble a signed 4-bit amount; all
+                // saturate. Battle Morph darkens its menu panels in place this way
+                // (IINC $00D8xxxx = -40) and colours its grey font: $77 gives
+                // yellow letters, $78 the green tick and $07 the red arrow.
+                auto shade = [&](uint32_t p16) {
+                    int32_t inc24 = (int32_t)((uint32_t)iinc << 8) >> 8;
+                    int32_t y = ((int32_t)((p16 & 0xFF) << 16) + inc24) >> 16;
+                    y = y < 0 ? 0 : (y > 255 ? 255 : y);
+                    auto sn = [](int n) { return n >= 8 ? n - 16 : n; };
+                    const int dc = (int)((uint32_t)iinc >> 24);
+                    int c = (int)((p16 >> 12) & 15) + sn(dc >> 4);
+                    int r = (int)((p16 >> 8) & 15) + sn(dc & 15);
+                    c = c < 0 ? 0 : (c > 15 ? 15 : c);
+                    r = r < 0 ? 0 : (r > 15 ? 15 : r);
+                    return (uint32_t)(c << 12 | r << 8 | y);
+                };
+                if (srcA.bpp == 16) src = shade(src);
+                else if (srcA.bpp == 32) src = shade(src >> 16) << 16 | shade(src & 0xFFFF);
+            }
             uint32_t dst = dsten ? readPix(this, dstA, dx, dy) : regData(dstd, dx);
 
             uint32_t out;
@@ -338,7 +362,7 @@ void Jaguar::blitterGo() {
                 out = (fromPhrase(patd, 16, dx) & 0xFF00) | ((iv >> 16) & 0xFF);
                 ivUsed = iv;
             }
-            if (dcompen && src == 0) inhibit = true;
+            if (dcompen && rawSrc == 0) inhibit = true;
 
             // Z buffer
             uint32_t srcZ = 0, zaddr = 0;

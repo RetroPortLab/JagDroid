@@ -51,17 +51,26 @@ uint16_t Risc::fetch16(uint32_t a) {
 // Cost of a load or store that leaves the RISC's local RAM. A read waits for the
 // DRAM round trip; writes are buffered. The blitter has priority on the bus, so
 // accesses made while it is busy wait longer.
-void Risc::extAccess(bool write) {
+void Risc::extAccess(bool write, uint32_t a) {
     cycleDebt += write ? 3 : 9;
-    jag->riscBusUse += write ? 2 : 4;   // bus clocks taken from the 68000
     if (jag->blitBusy > 0) cycleDebt += 6;
+    // Only main-bus traffic takes time from the 68000. The GPU's reads and
+    // writes of TOM's own registers (blitter, video, its control block) and
+    // the DSP's of JERRY's stay inside the chip. I-War's GPU polls the blitter
+    // status in a tight loop; charging those reads as bus time starved the
+    // 68000 for ~50 lines, so its vertical-blank handler ran late and the
+    // picture jumped for a frame (the same "shake" in Wolfenstein and Missile
+    // Command 3D).
+    a &= 0xFFFFFF;
+    const bool onChip = isDsp ? (a >= 0xF10000 && a < 0xF20000) : (a >= 0xF00000 && a < 0xF10000);
+    if (!onChip) jag->riscBusUse += write ? 2 : 4;   // bus clocks taken from the 68000
 }
 
 uint32_t Risc::load32(uint32_t a) {
     a = unmirror(isDsp, a);
     uint32_t o = (a & ~3u) - ramBase;
     if (o < ramSize) return (uint32_t)ram[o] << 24 | ram[o+1] << 16 | ram[o+2] << 8 | ram[o+3];
-    extAccess(false);  // external bus access is slower
+    extAccess(false, a);  // external bus access is slower
     return jag->read32(a);
 }
 
@@ -72,7 +81,7 @@ void Risc::store32(uint32_t a, uint32_t v) {
         ram[o] = v >> 24; ram[o+1] = (v >> 16) & 0xFF; ram[o+2] = (v >> 8) & 0xFF; ram[o+3] = v & 0xFF;
         return;
     }
-    extAccess(true);
+    extAccess(true, a);
     jag->write32(a, v);
 }
 
@@ -415,8 +424,8 @@ void Risc::step() {
     }
     // Local RAM is 32 bits wide and only takes long accesses: byte and word loads
     // and stores there act on the whole aligned long (Wolfenstein 3D relies on it).
-    case 39: { uint32_t o = S - ramBase; D = (o < ramSize) ? load32(S & ~3u) : jag->read8(S); if (o >= ramSize) extAccess(false); break; } // LOADB
-    case 40: { uint32_t o = S - ramBase; D = (o < ramSize) ? load32(S & ~3u) : jag->read16(S); if (o >= ramSize) extAccess(false); break; } // LOADW
+    case 39: { uint32_t o = S - ramBase; D = (o < ramSize) ? load32(S & ~3u) : jag->read8(S); if (o >= ramSize) extAccess(false, S); break; } // LOADB
+    case 40: { uint32_t o = S - ramBase; D = (o < ramSize) ? load32(S & ~3u) : jag->read16(S); if (o >= ramSize) extAccess(false, S); break; } // LOADW
     case 41: D = load32(S); break;                                                            // LOAD
     case 42:
         if (!isDsp) { hidata = load32(S); D = load32(S + 4); }                                // LOADP
@@ -431,8 +440,8 @@ void Risc::step() {
         break;
     case 43: D = load32(R(14) + quick(r1) * 4); break;                                        // LOAD (R14+n)
     case 44: D = load32(R(15) + quick(r1) * 4); break;                                        // LOAD (R15+n)
-    case 45: { uint32_t o = S - ramBase; if (o < ramSize) store32(S & ~3u, D); else { jag->write8(S, D & 0xFF); extAccess(true); } break; } // STOREB
-    case 46: { uint32_t o = S - ramBase; if (o < ramSize) store32(S & ~3u, D); else { jag->write16(S, D & 0xFFFF); extAccess(true); } break; } // STOREW
+    case 45: { uint32_t o = S - ramBase; if (o < ramSize) store32(S & ~3u, D); else { jag->write8(S, D & 0xFF); extAccess(true, S); } break; } // STOREB
+    case 46: { uint32_t o = S - ramBase; if (o < ramSize) store32(S & ~3u, D); else { jag->write16(S, D & 0xFFFF); extAccess(true, S); } break; } // STOREW
     case 47: store32(S, D); break;                                                            // STORE
     case 48:
         if (!isDsp) { store32(S, hidata); store32(S + 4, D); }                                // STOREP

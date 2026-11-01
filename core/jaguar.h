@@ -54,7 +54,7 @@ struct Risc {
     void reset();
     void run(int cycles);
     void raiseInt(int n);
-    void extAccess(bool write);
+    void extAccess(bool write, uint32_t addr);
     void pcWatch(uint32_t addr);
     void checkInterrupts();
 

@@ -177,9 +177,12 @@ static void drawBitmapLine(Jaguar* j, uint32_t data, uint64_t p1, int hscale /* 
 void Jaguar::opRenderLine(int vc) {
     uint32_t olp = ((uint32_t)tomReg16(0x22) << 16 | tomReg16(0x20)) & 0xFFFFF8;
     uint32_t addr = olp;
+    const bool dumpThis = verbose && getenv("JAG_OPDUMPVC") && vc == atoi(getenv("JAG_OPDUMPVC")) && getenv("JAG_OPDUMPF") && (long)frameCount == atol(getenv("JAG_OPDUMPF"));
+    if (dumpThis) fprintf(stderr, "[op vc=%d] OLP=%06X\n", vc, olp);
     for (int guard = 0; guard < 4096; guard++) {
         uint64_t p0 = readPhrase(this, addr);
         int type = (int)(p0 & 7);
+        if (dumpThis && type >= 2) fprintf(stderr, "[op vc=%d] %06X type=%d phrase=%016llX\n", vc, addr, type, (unsigned long long)p0);
         switch (type) {
         case 0:  // bitmap
         case 1: { // scaled bitmap
@@ -190,8 +193,8 @@ void Jaguar::opRenderLine(int vc) {
             uint64_t p1 = readPhrase(this, addr + 8);
             int dwidth = (int)((p1 >> 18) & 0x3FF);
             if (verbose && getenv("JAG_OPDUMPVC") && vc == atoi(getenv("JAG_OPDUMPVC")) && getenv("JAG_OPDUMPF") && (long)frameCount == atol(getenv("JAG_OPDUMPF")))
-                fprintf(stderr, "[op vc=%d] %06X type=%d y=%d h=%d data=%06X x=%d depth=%d iw=%d dw=%d pitch=%d first=%d\n", vc, addr, type, ypos, height, data,
-                        (int)(p1 & 0xFFF), (int)((p1 >> 12) & 7), (int)((p1 >> 28) & 0x3FF), dwidth, (int)((p1 >> 15) & 7), (int)((p1 >> 49) & 0x3F));
+                fprintf(stderr, "[op vc=%d] %06X type=%d y=%d h=%d data=%06X x=%d depth=%d iw=%d dw=%d pitch=%d first=%d idx=%d refl=%d rmw=%d trans=%d rel=%d p2=%06X\n", vc, addr, type, ypos, height, data,
+                        (int)(p1 & 0xFFF), (int)((p1 >> 12) & 7), (int)((p1 >> 28) & 0x3FF), dwidth, (int)((p1 >> 15) & 7), (int)((p1 >> 49) & 0x3F), (int)((p1 >> 38) & 0x7F), (int)((p1 >> 45) & 1), (int)((p1 >> 46) & 1), (int)((p1 >> 47) & 1), (int)((p1 >> 48) & 1), type == 1 ? (unsigned)(readPhrase(this, addr + 16) & 0xFFFFFF) : 0u);
             if (vc >= ypos && height > 0) {
                 if (type == 0) {
                     drawBitmapLine(this, data, p1, 0x20);

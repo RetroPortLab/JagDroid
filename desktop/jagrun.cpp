@@ -91,6 +91,23 @@ int main(int argc, char** argv) {
         for (auto& h : holds) if (f >= h.from && f < h.to) m |= h.mask;
         j->setButtons(m);
         j->runFrame();
+        if (const char* df = getenv("JAG_DUMPFRAMES")) {   // "from:to:prefix" writes each frame as prefix_NNNNN.ppm
+            static long dfrom = -1, dto = -1; static char pre[256];
+            if (dfrom < 0) sscanf(df, "%ld:%ld:%255s", &dfrom, &dto, pre);
+            if (f >= dfrom && f <= dto) {
+                char nm[300]; snprintf(nm, sizeof nm, "%s_%05d.ppm", pre, f);
+                if (FILE* o = fopen(nm, "wb")) {
+                    int w = j->frameWidth(), h = j->frameHeight();
+                    fprintf(o, "P6\n%d %d\n255\n", w, h);
+                    for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
+                        uint32_t p = j->framebuffer()[y * jag::Jaguar::MAX_W + x];
+                        uint8_t rgb[3] = {(uint8_t)p, (uint8_t)(p >> 8), (uint8_t)(p >> 16)};
+                        fwrite(rgb, 1, 3, o);
+                    }
+                    fclose(o);
+                }
+            }
+        }
         audioSamples += j->audio.size() / 2;
         if (wavPath) wav.insert(wav.end(), j->audio.begin(), j->audio.end());
     }

@@ -132,6 +132,12 @@ extern "C" void jag_trace_write(unsigned addr, unsigned val, int size) {
 // Log GPU writes of the blitter pattern colour during one gameplay frame
 static int g_patdFrame = -1, g_patdLogged = 0;
 extern "C" void jag_trace_tomwrite(unsigned off, unsigned value, int size) {
+    if (J && (off == 0x20 || off == 0x22) && getenv("JAG_OLPLOG") && (long)J->frameCount >= atol(getenv("JAG_OLPLOG"))) {
+        static const char* whoN[] = {"68k", "GPU", "DSP", "BLITTER", "OP"};
+        unsigned pc = J->busMaster == 0 ? m68k_get_reg(nullptr, M68K_REG_PPC) : (J->busMaster == 1 ? J->gpu.pc : J->dsp.pc);
+        fprintf(stderr, "[olp] %s pc=%06X wrote %0*X to $F000%02X frame %llu VC=%d\n", whoN[J->busMaster], pc, size * 2, value, off,
+                (unsigned long long)J->frameCount, J->halfLine);
+    }
     if (!J || J->busMaster != 1 || (int)J->frameCount != g_patdFrame) return;
     if ((off == 0x2268 || off == 0x226C) && g_patdLogged < 12) {
         g_patdLogged++;
@@ -165,6 +171,16 @@ extern "C" void jag_trace_pc(unsigned int pc) {
             for (int r = M68K_REG_A0; r <= M68K_REG_A7; r++) fprintf(stderr, " %08X", m68k_get_reg(nullptr, (m68k_register_t)r));
             unsigned sp = m68k_get_reg(nullptr, M68K_REG_A7);
             fprintf(stderr, " stk: %08X %08X %08X %08X\n", J->read32(sp), J->read32(sp + 4), J->read32(sp + 8), J->read32(sp + 12));
+        }
+    }
+    if (const char* pl = getenv("JAG_PCLINES")) {   // "frame:vcfrom:vcto[:frame2]" 68000 PC/SR at each new half-line
+        static long pf = -1, pf2 = -1; static int v0, v1, lastVc = -1;
+        if (pf < 0) { if (sscanf(pl, "%ld:%d:%d:%ld", &pf, &v0, &v1, &pf2) < 4) pf2 = pf; }
+        long fr = J ? (long)J->frameCount : -1;
+        if (J && fr >= pf && fr <= pf2 && J->halfLine >= v0 && J->halfLine <= v1 && J->halfLine != lastVc) {
+            lastVc = J->halfLine;
+            fprintf(stderr, "[line f%ld vc=%d] pc=%06X sr=%04X int1en=%02X pend=%02X blit=%.0f gpu=%d@%06X\n", fr, J->halfLine, pc,
+                    m68k_get_reg(nullptr, M68K_REG_SR), J->tomIntEnable, J->tomIntPending, J->blitBusy, J->gpu.running, J->gpu.pc);
         }
     }
     {   // JAG_HIST68=frame: histogram of 68000 PCs in that frame, printed at the end of it
