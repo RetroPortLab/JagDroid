@@ -67,9 +67,9 @@ struct Resampler {
     float lp[2] = {0, 0};
     std::vector<int16_t> out;
     void reset() { std::memset(h, 0, sizeof h); pos = 0; lp[0] = lp[1] = 0; }
-    void process(const int16_t* in, int frames, int inRate) {
+    void process(const int16_t* in, int frames, int inRate, double stepScale = 1.0) {
         out.clear();
-        const double step = (double)inRate / OUT_RATE;
+        const double step = (double)inRate / OUT_RATE * stepScale;
         // low-pass corner just under the input Nyquist (capped for high rates)
         const float fc = std::min(0.42f * (float)inRate, 16000.0f);
         const float a = 1.0f - std::exp(-2.0f * 3.14159265f * fc / OUT_RATE);
@@ -93,6 +93,64 @@ struct Resampler {
     }
 } g_resampler;
 
+// The emulator thread pushes resampled frames into a lock-free ring; the sound
+// card pulls them from its own callback. Writing straight to the stream made any
+// late frame an audible gap, and the gaps were the pops and scratchiness. If the
+// ring runs dry the output fades out instead of cutting, and the resampler
+// speeds up or slows down by a fraction of a percent to hold the fill level.
+constexpr int RING_FRAMES = 1 << 14;                  // ~340 ms
+constexpr int TARGET_FILL = OUT_RATE * 70 / 1000;     // keep ~70 ms queued
+int16_t g_ring[RING_FRAMES * 2];
+std::atomic<uint32_t> g_ringW{0}, g_ringR{0};
+std::atomic<bool> g_ringPrimed{false};
+float g_lastL = 0, g_lastR = 0;
+
+inline uint32_t ringFill() { return g_ringW.load(std::memory_order_acquire) - g_ringR.load(std::memory_order_acquire); }
+
+void ringPush(const int16_t* d, int frames) {
+    uint32_t w = g_ringW.load(std::memory_order_relaxed);
+    const uint32_t r = g_ringR.load(std::memory_order_acquire);
+    int room = RING_FRAMES - (int)(w - r);
+    if (frames > room) frames = room;   // overrun: drop the newest rather than glitch the oldest
+    for (int i = 0; i < frames; i++) {
+        g_ring[((w + i) & (RING_FRAMES - 1)) * 2] = d[2 * i];
+        g_ring[((w + i) & (RING_FRAMES - 1)) * 2 + 1] = d[2 * i + 1];
+    }
+    g_ringW.store(w + frames, std::memory_order_release);
+}
+
+aaudio_data_callback_result_t audioCb(AAudioStream*, void*, void* data, int32_t n) {
+    int16_t* o = (int16_t*)data;
+    uint32_t r = g_ringR.load(std::memory_order_relaxed);
+    const uint32_t w = g_ringW.load(std::memory_order_acquire);
+    int avail = (int)(w - r);
+    if (!g_ringPrimed.load(std::memory_order_relaxed)) {
+        if (avail >= TARGET_FILL / 2) g_ringPrimed.store(true, std::memory_order_relaxed);
+        else avail = 0;
+    }
+    int take = std::min(avail, (int)n);
+    for (int i = 0; i < take; i++) {
+        o[2 * i] = g_ring[((r + i) & (RING_FRAMES - 1)) * 2];
+        o[2 * i + 1] = g_ring[((r + i) & (RING_FRAMES - 1)) * 2 + 1];
+    }
+    if (take > 0) { g_lastL = o[2 * (take - 1)]; g_lastR = o[2 * (take - 1) + 1]; }
+    // Underrun: ease the last value to zero over what is missing.
+    if (take < n) {
+        const int miss = n - take;
+        for (int i = 0; i < miss; i++) {
+            const float k = 1.0f - (float)(i + 1) / (float)std::max(miss, 64);
+            const float f = std::max(0.0f, k);
+            o[2 * (take + i)] = (int16_t)(g_lastL * f);
+            o[2 * (take + i) + 1] = (int16_t)(g_lastR * f);
+        }
+        g_lastL *= std::max(0.0f, 1.0f - (float)miss / 64.0f);
+        g_lastR *= std::max(0.0f, 1.0f - (float)miss / 64.0f);
+        if (take == 0) g_ringPrimed.store(false, std::memory_order_relaxed);   // refill before resuming
+    }
+    g_ringR.store(r + take, std::memory_order_release);
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+
 void closeAudio() {
     if (g_stream) { AAudioStream_requestStop(g_stream); AAudioStream_close(g_stream); g_stream = nullptr; }
     g_streamRate = 0;
@@ -106,12 +164,13 @@ void openAudio(int rate) {
     AAudioStreamBuilder_setChannelCount(b, 2);
     AAudioStreamBuilder_setSampleRate(b, OUT_RATE);
     g_resampler.reset();
+    g_ringW = 0; g_ringR = 0; g_ringPrimed = false; g_lastL = g_lastR = 0;
+    AAudioStreamBuilder_setDataCallback(b, audioCb, nullptr);
     AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     if (AAudioStreamBuilder_openStream(b, &g_stream) == AAUDIO_OK) {
         int32_t burst = AAudioStream_getFramesPerBurst(g_stream);
-        // About 100 ms of slack so a slow frame doesn't empty the buffer (crackle).
-        int32_t want = std::max(burst * 8, rate / 10);
-        AAudioStream_setBufferSizeInFrames(g_stream, std::min(want, AAudioStream_getBufferCapacityInFrames(g_stream)));
+        // The ring supplies the slack; keep the device buffer a few bursts deep.
+        AAudioStream_setBufferSizeInFrames(g_stream, std::min(burst * 4, AAudioStream_getBufferCapacityInFrames(g_stream)));
         AAudioStream_requestStart(g_stream);
         g_streamRate = rate;
         LOG("audio %d Hz, burst %d", AAudioStream_getSampleRate(g_stream), burst);
@@ -338,12 +397,12 @@ void emuLoop() {
         int rate = g_emu->audioRate();
         if (g_streamRate != OUT_RATE) openAudio(OUT_RATE);
         if (g_stream && !g_emu->audio.empty() && rate > 4000 && rate < 200000) {
-            g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate);
-            int frames = (int)g_resampler.out.size() / 2;
-            // Wait briefly for room rather than dropping samples: a full buffer
-            // means emulation is running slightly ahead of the sound card, and
-            // dropped chunks are heard as clicks and distortion.
-            AAudioStream_write(g_stream, g_resampler.out.data(), frames, 20 * 1000 * 1000);
+            // Steer the queue toward TARGET_FILL: fuller than wanted -> consume input a
+            // touch faster (fewer output frames), emptier -> a touch slower.
+            double err = ((double)ringFill() - TARGET_FILL) / TARGET_FILL;
+            err = std::max(-1.0, std::min(1.0, err));
+            g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate, 1.0 + 0.01 * err);
+            ringPush(g_resampler.out.data(), (int)g_resampler.out.size() / 2);
         }
 
         next += frameTime;
