@@ -681,10 +681,52 @@ public class MainActivity extends Activity {
         } catch (SecurityException ignored) { }
         switch (req) {
             case PICK_FOLDER: prefs.edit().putString("folder", uri.toString()).apply(); showLibrary(); break;
-            case PICK_BIOS: prefs.edit().putString("bios", uri.toString()).putBoolean("useBios", true).apply(); showSettings(); break;
-            case PICK_CDBIOS: prefs.edit().putString("cdbios", uri.toString()).apply(); showSettings(); break;
+            case PICK_BIOS:
+            case PICK_CDBIOS: {
+                // The console BIOS is 128 KB and the Jaguar CD BIOS 256 KB; put each in its own slot.
+                byte[] b = readAll(uri);
+                int kind = b == null ? 0 : biosKind(b);
+                boolean wantCd = req == PICK_CDBIOS;
+                if (kind == 1 && wantCd) {
+                    toast("That's the console BIOS, not the Jaguar CD BIOS (a 256 KB file). It's been set as the console BIOS instead.");
+                    prefs.edit().putString("bios", uri.toString()).putBoolean("useBios", true).apply();
+                } else if (kind == 2 && !wantCd) {
+                    toast("That's the Jaguar CD BIOS. It's been set as the CD BIOS; the console BIOS is a 128 KB file.");
+                    prefs.edit().putString("cdbios", uri.toString()).apply();
+                } else if (kind == 0) {
+                    toast(b == null ? "Couldn't read that file" : "That doesn't look like a Jaguar BIOS (expected 128 KB for the console or 256 KB for the CD)");
+                } else if (wantCd) {
+                    prefs.edit().putString("cdbios", uri.toString()).apply();
+                } else {
+                    prefs.edit().putString("bios", uri.toString()).putBoolean("useBios", true).apply();
+                }
+                showSettings();
+                break;
+            }
             case PICK_GAME: startGame(uri, null); break;
         }
+    }
+
+    /** 1 = console BIOS (128 KB), 2 = Jaguar CD BIOS (256 KB), 0 = neither. */
+    static int biosKind(byte[] b) {
+        if (b.length == 128 * 1024) return 1;
+        if (b.length == 256 * 1024) return 2;
+        return 0;
+    }
+
+    /** Reads the chosen CD BIOS, or explains what's wrong and returns null. */
+    private byte[] cdBiosOrComplain() {
+        String cdBiosUri = prefs.getString("cdbios", null);
+        if (cdBiosUri == null) { toast("Choose the Jaguar CD BIOS in Settings first"); showSettings(); return null; }
+        byte[] cdBios = readAll(Uri.parse(cdBiosUri));
+        if (cdBios == null) { toast("Couldn't read the CD BIOS file; choose it again in Settings"); showSettings(); return null; }
+        if (biosKind(cdBios) != 2) {
+            toast(biosKind(cdBios) == 1 ? "The CD BIOS slot holds the console BIOS. Choose the Jaguar CD BIOS (256 KB) in Settings."
+                    : "The file in the CD BIOS slot isn't a Jaguar CD BIOS (256 KB). Choose it again in Settings.");
+            showSettings();
+            return null;
+        }
+        return cdBios;
     }
 
     private String displayName(Uri uri) {
@@ -740,10 +782,8 @@ public class MainActivity extends Activity {
     }
 
     private void startDisc(Game g) {
-        String cdBiosUri = prefs.getString("cdbios", null);
-        if (cdBiosUri == null) { toast("Choose the Jaguar CD BIOS in Settings first"); showSettings(); return; }
-        byte[] cdBios = readAll(Uri.parse(cdBiosUri));
-        if (cdBios == null) { toast("Couldn't read the CD BIOS file"); return; }
+        byte[] cdBios = cdBiosOrComplain();
+        if (cdBios == null) return;
         byte[] cueBytes = readAll(g.uri);
         if (cueBytes == null || g.tree == null) { toast("Couldn't read the cue sheet"); return; }
         String cue = new String(cueBytes, java.nio.charset.StandardCharsets.UTF_8);
@@ -796,10 +836,8 @@ public class MainActivity extends Activity {
 
     /** Zipped CD: unpacks compressed tracks into the cache (once) with a progress screen. */
     private void startZipDisc(Game g) {
-        String cdBiosUri = prefs.getString("cdbios", null);
-        if (cdBiosUri == null) { toast("Choose the Jaguar CD BIOS in Settings first"); showSettings(); return; }
-        byte[] cdBios = readAll(Uri.parse(cdBiosUri));
-        if (cdBios == null) { toast("Couldn't read the CD BIOS file"); return; }
+        byte[] cdBios = cdBiosOrComplain();
+        if (cdBios == null) return;
         android.os.ParcelFileDescriptor pfd;
         try { pfd = getContentResolver().openFileDescriptor(g.uri, "r"); } catch (Exception e) { pfd = null; }
         if (pfd == null) { toast("Couldn't open " + g.fileName); return; }
