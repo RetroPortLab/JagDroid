@@ -75,7 +75,11 @@ uint32_t Risc::load32(uint32_t a) {
     // just in local RAM. Power Drive Rally loads a long from $580E and
     // expects the long at $580C; reading across the boundary put every
     // object ~470 lines below the screen.
-    return jag->read32(a & ~3u);
+    static const bool noAlL = getenv("JAG_X_NOALIGNL") != nullptr;
+    if ((a & 3) && jag->verbose && getenv("JAG_UNALOG")) { static int n = 0; if (n++ < 30) fprintf(stderr, "[unaligned load] %s pc=%06X a=%06X\n", isDsp ? "DSP" : "GPU", pc, a); }
+    // (TOM/JERRY register space is 16 bits wide: a long access at offset 2
+    // there covers two registers, so it is not aligned.)
+    return jag->read32((noAlL || (a & 0xFFFFFF) >= 0xF00000) ? a : (a & ~3u));
 }
 
 void Risc::store32(uint32_t a, uint32_t v) {
@@ -86,7 +90,10 @@ void Risc::store32(uint32_t a, uint32_t v) {
         return;
     }
     extAccess(true, a);
-    jag->write32(a & ~3u, v);
+    static const bool noAlS = getenv("JAG_X_NOALIGNS") != nullptr;
+    if ((a & 3) && jag->verbose && getenv("JAG_UNALOG")) { static int n = 0; if (n++ < 30) fprintf(stderr, "[unaligned store] %s pc=%06X a=%06X v=%08X\n", isDsp ? "DSP" : "GPU", pc, a, v); }
+    // Protector long-writes $F0002A (BORD1/BORD2); aligning it wiped VMODE.
+    jag->write32((noAlS || (a & 0xFFFFFF) >= 0xF00000) ? a : (a & ~3u), v);
 }
 
 // Control registers at $F02100 (GPU) / $F1A100 (DSP)
@@ -429,7 +436,7 @@ void Risc::step() {
     // Local RAM is 32 bits wide and only takes long accesses: byte and word loads
     // and stores there act on the whole aligned long (Wolfenstein 3D relies on it).
     case 39: { uint32_t o = S - ramBase; D = (o < ramSize) ? load32(S & ~3u) : jag->read8(S); if (o >= ramSize) extAccess(false, S); break; } // LOADB
-    case 40: { uint32_t o = S - ramBase; D = (o < ramSize) ? load32(S & ~3u) : jag->read16(S & ~1u); if (o >= ramSize) extAccess(false, S); break; } // LOADW
+    case 40: { uint32_t o = S - ramBase; D = (o < ramSize) ? load32(S & ~3u) : jag->read16(getenv("JAG_X_NOALIGNW") ? S : (S & ~1u)); if (o >= ramSize) extAccess(false, S); break; } // LOADW
     case 41: D = load32(S); break;                                                            // LOAD
     case 42:
         if (!isDsp) { hidata = load32(S); D = load32(S + 4); }                                // LOADP
@@ -445,7 +452,7 @@ void Risc::step() {
     case 43: D = load32(R(14) + quick(r1) * 4); break;                                        // LOAD (R14+n)
     case 44: D = load32(R(15) + quick(r1) * 4); break;                                        // LOAD (R15+n)
     case 45: { uint32_t o = S - ramBase; if (o < ramSize) store32(S & ~3u, D); else { jag->write8(S, D & 0xFF); extAccess(true, S); } break; } // STOREB
-    case 46: { uint32_t o = S - ramBase; if (o < ramSize) store32(S & ~3u, D); else { jag->write16(S & ~1u, D & 0xFFFF); extAccess(true, S); } break; } // STOREW
+    case 46: { uint32_t o = S - ramBase; if (o < ramSize) store32(S & ~3u, D); else { jag->write16(getenv("JAG_X_NOALIGNW") ? S : (S & ~1u), D & 0xFFFF); extAccess(true, S); } break; } // STOREW
     case 47: store32(S, D); break;                                                            // STORE
     case 48:
         if (!isDsp) { store32(S, hidata); store32(S + 4, D); }                                // STOREP

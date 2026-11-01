@@ -271,7 +271,10 @@ void Jaguar::outputLine(int vc) {
     if (row < 0 || row >= MAX_H) return;
     uint32_t* out = fb + row * MAX_W;
     const int mode = (vmode >> 1) & 3;
-    const bool varmod = (vmode >> 8) & 1;
+    // VARMOD (per-pixel CRY/RGB by bit 0) only works on top of CRY mode; with
+    // RGB16 selected it is ignored. Rayman sets RGB16 + VARMOD, and mixing
+    // turned its RGB pictures into psychedelic CRY colours.
+    const bool varmod = ((vmode >> 8) & 1) && ((vmode >> 1) & 3) == 0;
     const bool enabled = vmode & 1;
 
     const int linePw = ((vmode >> 9) & 7) + 1;
@@ -285,7 +288,7 @@ void Jaguar::outputLine(int vc) {
         for (int x = 0; x < fbW; x++) {
             const int sx = (x * step) >> 8;
             uint16_t p = lineBuf[sx];
-            bool cry = enabled && (varmod ? (mode != 1 && !(p & 1)) : mode == 0);
+            bool cry = enabled && (varmod ? !(p & 1) : mode == 0);
             inf[x] = cry ? ((uint32_t)p << 16 | SH_CRY | lineFrac[sx]) : 0;
         }
     }
@@ -294,7 +297,7 @@ void Jaguar::outputLine(int vc) {
         const int sx = (x * step) >> 8;
         uint16_t p = lineBuf[sx];
         // Mixed mode: in the 16-bit modes each pixel's low bit picks RGB (1) or CRY (0).
-        if (varmod && mode != 1) { out[x] = (p & 1) ? rgb16ToRgba(p) : cryTable[p]; continue; }
+        if (varmod) { out[x] = (p & 1) ? rgb16ToRgba(p) : cryTable[p]; continue; }
         switch (mode) {
             case 0: out[x] = cryTable[p]; break;                                   // CRY16
             case 1: {                                                              // RGB24
@@ -304,8 +307,7 @@ void Jaguar::outputLine(int vc) {
             }
             case 2: out[x] = rgb16ToRgba(p); break;                                // DIRECT16 (shown as RGB)
             default:
-                if (varmod) out[x] = (p & 1) ? rgb16ToRgba(p) : cryTable[p];
-                else out[x] = rgb16ToRgba(p);
+                out[x] = rgb16ToRgba(p);
                 break;
         }
     }

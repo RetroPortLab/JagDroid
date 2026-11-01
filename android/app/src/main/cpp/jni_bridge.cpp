@@ -156,10 +156,11 @@ void present() {
     }
     // Overscan: games leave junk in the border a TV hides (Super Burnout's
     // bottom rows, Troy Aikman's players walking off the field). Trim about
-    // 5% each side and 3% top and bottom, in whole emulated pixels.
+    // 5% each side and 3% off the bottom, in whole emulated pixels. The top
+    // is left alone: games put score text right up there (Super Burnout).
     if (g_cropOverscan.load()) {
-        const int cx = (g_emu->frameWidth() * 5 / 100) * scale, cy = (g_emu->frameHeight() * 3 / 100) * scale;
-        if (w > 2 * cx + 64 && h > 2 * cy + 64) { src += (size_t)cy * srcStride + cx; w -= 2 * cx; h -= 2 * cy; }
+        const int cx = (g_emu->frameWidth() * 5 / 100) * scale, cyBottom = (g_emu->frameHeight() * 3 / 100) * scale;
+        if (w > 2 * cx + 64 && h > cyBottom + 64) { src += cx; w -= 2 * cx; h -= cyBottom; }
     }
     // At 1x each emulated line becomes 3 output rows for scanlines; at 2x the
     // picture already has 2 rows per line, so the second one is the dark row.
