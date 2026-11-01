@@ -13,3 +13,4 @@ First release on GitHub. From this version on, JagDroid can update itself.
 Coming from v0.26 or earlier: install this APK manually once (it installs over the old version and keeps your data). After that, updates come through the app.
 
 No games or BIOS files are included; you supply your own.
+
