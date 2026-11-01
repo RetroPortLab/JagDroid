@@ -592,7 +592,7 @@ void Jaguar::tickTimers(double sys) {
     // TOM PIT -> 68k (bit 3) and GPU interrupt 2
     {
         uint32_t pre = tomReg16(T_PIT0), div = tomReg16(T_PIT1);
-        if (pre && div) {
+        if (pre) {   // a zero divider just means divide by 1
             double period = (double)(pre + 1) * (div + 1);
             tomPitAcc += sys;
             while (tomPitAcc >= period) { tomPitAcc -= period; tomRaise(3); gpu.raiseInt(2); }
@@ -600,14 +600,17 @@ void Jaguar::tickTimers(double sys) {
     }
     // JERRY timer 1 and 2
     {
+        // A JERRY timer runs when either value is non-zero; zero means divide
+        // by 1. Pinball Fantasies sets prescaler $25A with divider 0 for its
+        // ~44 kHz sample timer, which we left stopped (no sound at all).
         uint32_t pre = jerryReg16(J_PIT1), div = jerryReg16(J_PIT2);
-        if (pre && div) {
+        if (pre || div) {
             double period = (double)(pre + 1) * (div + 1);
             jPit1Acc += sys;
             while (jPit1Acc >= period) { jPit1Acc -= period; dsp.raiseInt(2); jerryRaise(2); }
         }
         pre = jerryReg16(J_PIT3); div = jerryReg16(J_PIT4);
-        if (pre && div) {
+        if (pre || div) {
             double period = (double)(pre + 1) * (div + 1);
             jPit2Acc += sys;
             while (jPit2Acc >= period) { jPit2Acc -= period; dsp.raiseInt(3); jerryRaise(3); }

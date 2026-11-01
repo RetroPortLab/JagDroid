@@ -132,7 +132,7 @@ extern "C" void jag_trace_write(unsigned addr, unsigned val, int size) {
 // Log GPU writes of the blitter pattern colour during one gameplay frame
 static int g_patdFrame = -1, g_patdLogged = 0;
 extern "C" void jag_trace_tomwrite(unsigned off, unsigned value, int size) {
-    if (J && (off == 0x20 || off == 0x22) && getenv("JAG_OLPLOG") && (long)J->frameCount >= atol(getenv("JAG_OLPLOG"))) {
+    if (J && (off == 0x20 || off == 0x22 || off == 0x58) && getenv("JAG_OLPLOG") && (long)J->frameCount >= atol(getenv("JAG_OLPLOG"))) {
         static const char* whoN[] = {"68k", "GPU", "DSP", "BLITTER", "OP"};
         unsigned pc = J->busMaster == 0 ? m68k_get_reg(nullptr, M68K_REG_PPC) : (J->busMaster == 1 ? J->gpu.pc : J->dsp.pc);
         fprintf(stderr, "[olp] %s pc=%06X wrote %0*X to $F000%02X frame %llu VC=%d\n", whoN[J->busMaster], pc, size * 2, value, off,
