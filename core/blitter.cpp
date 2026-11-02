@@ -407,8 +407,15 @@ void Jaguar::blitterGo() {
                     zpix += (uint32_t)zinc;
                 }
                 zaddr = zAddr(dstA, dx, dy);
-                if (zbuff && dstenz && zaddr != 0xFFFFFFFFu) {
-                    uint32_t dstZ = j_read16(this, zaddr);
+                // Z compare runs for GOURZ+DSTENZ blits as before. A source-Z copy
+                // (SRCENZ) with a ZMODE but no DSTENZ also compares, against a
+                // destination Z of 0: Breakout 2000 erases a brick by clearing a
+                // save area (Z 0), copying the brick over it and copying that
+                // back, which only removes the brick when equal-Z pixels are
+                // inhibited in the middle copy.
+                const bool zcmp = (zbuff && dstenz) || (srcenz && !dstenz && zmode != 0);
+                if (zcmp && zaddr != 0xFFFFFFFFu) {
+                    uint32_t dstZ = dstenz ? j_read16(this, zaddr) : 0;
                     if (((zmode & 1) && srcZ < dstZ) || ((zmode & 2) && srcZ == dstZ) ||
                         ((zmode & 4) && srcZ > dstZ))
                         inhibit = true;
