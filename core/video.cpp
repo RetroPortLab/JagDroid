@@ -315,6 +315,7 @@ void Jaguar::outputLine(int vc) {
     // Clear the line buffer for the next line if background fill is enabled.
     if (vmode & 0x80) {
         uint16_t bg = tomReg16(0x58);
+        if (verbose && getenv("JAG_BGLOG") && (long)frameCount == atol(getenv("JAG_BGLOG"))) fprintf(stderr, "[bg] vc=%d bg=%04X\n", vc, bg);
         std::fill(lineBuf, lineBuf + 720, bg);
         std::fill(lineBuf32, lineBuf32 + 720, 0u);
         if (shadeTag) std::fill(lineFrac, lineFrac + 720, (uint16_t)0);

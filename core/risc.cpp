@@ -319,6 +319,11 @@ void Risc::step() {
             }
         }
     }
+    if (!isDsp && jag->verbose && getenv("JAG_GPCLOG") && (long)jag->frameCount == atol(getenv("JAG_GPCLOG")) && addr == (uint32_t)strtoul(getenv("JAG_GPCPC"), nullptr, 16)) {
+        fprintf(stderr, "[gpc] f%ld vc=%d", (long)jag->frameCount, jag->halfLine);
+        for (int i = 0; i < 32; i++) fprintf(stderr, " r%d=%X", i, R(i));
+        fprintf(stderr, "\n");
+    }
     if (traceLeft > 0) {
         traceLeft--;
         fprintf(stderr, "  %s %06X op=%2d %2d,%2d  r0=%08X r2=%08X r3=%08X r4=%08X r5=%08X Z%d C%d\n", name, addr, opcode, r1, r2,

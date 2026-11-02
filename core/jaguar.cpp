@@ -499,6 +499,8 @@ static inline bool completes32(uint32_t off, int size) { return size == 4 || (of
 extern "C" void jag_trace_tomwrite(unsigned off, unsigned value, int size);
 #endif
 void Jaguar::tomWriteHook(uint32_t off, uint32_t value, int size) {
+    if (verbose && getenv("JAG_TW") && off >= (uint32_t)strtoul(getenv("JAG_TW"), nullptr, 16) && off < (uint32_t)strtoul(getenv("JAG_TW"), nullptr, 16) + 4) fprintf(stderr, "[tw] f%ld vc=%d master=%d off=%X val=%X size=%d ppc=%06X\n", (long)frameCount, halfLine, busMaster, off, value, size, (unsigned)m68k_get_reg(nullptr, M68K_REG_PPC));
+    if (verbose && getenv("JAG_BGWATCH") && off == 0x58 && (long)frameCount == atol(getenv("JAG_BGWATCH"))) fprintf(stderr, "[bgw] vc=%d val=%04X r16=%08X/%08X r10=%08X/%08X r18=%08X/%08X\n", halfLine, value & 0xFFFF, gpu.regs[16], gpu.regs[48], gpu.regs[10], gpu.regs[42], gpu.regs[18], gpu.regs[50]);
 #ifdef JAG_TRACE
     jag_trace_tomwrite(off, value, size);
 #endif
@@ -702,6 +704,17 @@ void Jaguar::runFrame() {
         if (vi >= halfLine && vi < halfLine + 2) tomRaise(0);
 
         bool visible = halfLine >= firstVisible && (halfLine - firstVisible) / 2 < maxVisible;
+        {   // The OP walks the list from the top of the frame, not from VDB: GPU
+            // objects (and branches) fire on every line, only bitmaps wait for the
+            // display window. Super Burnout counts these per-line GPU interrupts to
+            // step its sky/ground colour table and expects entry N at about line N
+            // from the frame start; starting at VDB left a pale strip (and a late
+            // ground colour) at the horizon.
+            static int pre = getenv("JAG_OPPRE") ? atoi(getenv("JAG_OPPRE")) : 0;
+            if (pre >= 0 && halfLine >= pre && halfLine < (vdb & ~1)) {
+                opSkipBitmaps = true; busMaster = 4; opRenderLine(halfLine); busMaster = 0; opSkipBitmaps = false;
+            }
+        }
         if (halfLine >= (vdb & ~1) && halfLine < opEnd) {
             // With VDE=$FFFF, bitmap objects stop at the bottom of the shown
             // picture; below it the list is still walked so GPU objects and
