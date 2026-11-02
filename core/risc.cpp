@@ -176,6 +176,7 @@ void Risc::writeCtrlReg(uint32_t off, uint32_t v) {
                     (unsigned long long)jag->frameCount, pc);
         if (v & 4) raiseInt(0);  // force interrupt 0 (CPU interrupt)
         if (running && !wasRunning && jag->verbose && !isDsp && jag->frameCount < 40 && !getenv("JAG_TRACEDSP")) traceLeft = 30;
+        if (running && !wasRunning && jag->verbose && !isDsp && getenv("JAG_TRACEGPU") && (long)jag->frameCount >= atol(getenv("JAG_TRACEGPU"))) traceLeft = 400;
         if (running && !wasRunning && jag->verbose && isDsp && getenv("JAG_TRACEDSP")) traceLeft = atoi(getenv("JAG_TRACEDSP"));
         if (!running && wasRunning && jag->verbose)
             fprintf(stderr, "[%s] stopped at $%06X by %s (frame %llu) ctrl=%08X\n", name, pc,

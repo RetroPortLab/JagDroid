@@ -103,6 +103,10 @@ int main(int argc, char** argv) {
                 fclose(o);
             }
         }
+        if (const char* dm = getenv("JAG_DUMPMEM")) {   // "frame:addr(hex):len(hex):file" raw 68k-space bytes
+            long mf; unsigned ma, ml; char mp[200];
+            if (sscanf(dm, "%ld:%x:%x:%199s", &mf, &ma, &ml, mp) == 4 && f == mf) { FILE* o = fopen(mp, "wb"); for (unsigned k = 0; k < ml; k++) fputc(j->read8(ma + k), o); fclose(o); }
+        }
         if (getenv("JAG_RATELOG")) {   // report audio-rate changes
             static int lastRate = -1; int r = j->audioRate();
             if (r != lastRate) { fprintf(stderr, "[rate] frame %d: %d Hz (SMODE=%04X SCLK=%04X)\n", f, r, j->jerryReg16(0x1D4 + 0 + 0x0) , 0); lastRate = r; }
@@ -125,6 +129,7 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        if (const char* pl = getenv("JAG_PCLOG")) { if (f % atoi(pl) == 0) fprintf(stderr, "[pc] f%d PC=%06X SR=%04X gpu=%d dsp=%d blits=%llu\n", f, m68k_get_reg(nullptr, M68K_REG_PC), m68k_get_reg(nullptr, M68K_REG_SR), j->gpu.running, j->dsp.running, (unsigned long long)j->blitCount); if (getenv("JAG_PCBYTES") && f % atoi(pl) == 0) { unsigned pc = m68k_get_reg(nullptr, M68K_REG_PC); fprintf(stderr, "   code@%06X:", pc - 8); for (int k = -8; k < 24; k += 2) fprintf(stderr, " %04X", j->read16(pc + k)); fprintf(stderr, "\n"); unsigned sp = m68k_get_reg(nullptr, M68K_REG_SP); { unsigned nz=0, lastnz=0; for (unsigned a = 0x4000; a < 0x70000; a += 4) if (j->read32(a)) { nz++; lastnz = a; } fprintf(stderr, "   load: nonzero longs=%u last=%06X  @4000:", nz, lastnz); for (int k = 0; k < 40; k += 4) fprintf(stderr, " %08X", j->read32(0x4000 + k)); fprintf(stderr, "\n   @4018:"); for (int k = 0; k < 32; k += 4) fprintf(stderr, " %08X", j->read32(0x4018 + k)); fprintf(stderr, "\n"); } fprintf(stderr, "   vec:"); for (int k = 8; k < 0x40; k += 4) fprintf(stderr, " %02X=%06X", k, j->read32(k)); fprintf(stderr, "\n   sp=%06X:", sp); for (int k = 0; k < 40; k += 4) fprintf(stderr, " %08X", j->read32(sp + k)); fprintf(stderr, "\n"); } }
         audioSamples += j->audio.size() / 2;
         if (wavPath) wav.insert(wav.end(), j->audio.begin(), j->audio.end());
     }

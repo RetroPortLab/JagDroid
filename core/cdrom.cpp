@@ -324,9 +324,13 @@ void Butch::produceSample() {
     if (playing && disc) { w0 = nextDataWord(); w1 = nextDataWord(); }
     if (jag->verbose && getenv("JAG_CDFIFO") && playing && (playFrame == atoi(getenv("JAG_CDFIFO")) || playFrame == atoi(getenv("JAG_CDFIFO")) + 1) && bytePos < 400 + 4)
         fprintf(stderr, "[fifo] f%d b%d %04X%04X cnt=%d\n", playFrame, bytePos, w0, w1, fifoCount);
+    if (jag->verbose && getenv("JAG_CDSTART") && playing && (long)jag->frameCount >= atol(getenv("JAG_CDSTART"))) {
+        static long n = 0; static int lastPf = -1;
+        if (playFrame != lastPf && n < 6) { n++; lastPf = playFrame; fprintf(stderr, "[cdstart] frame %llu VC=%d playFrame=%d bytePos=%d gpu=%d@%06X dsp=%d i2sExt=%d w0=%04X w1=%04X\n", (unsigned long long)jag->frameCount, jag->halfLine, playFrame, bytePos, jag->gpu.running, jag->gpu.pc, jag->dsp.running, (int)jag->i2sExternal(), w0, w1); }
+    }
     if (playing && (i2cntrl & 4)) {
         if (fifoCount < 16) { fifo[(fifoR + fifoCount) & 15] = (uint32_t)fifoPrev << 16 | w0; fifoCount++; }
-        else fifoOverflows++;
+        else { fifoOverflows++; static const char* ol = getenv("JAG_CDOVF"); if (ol && jag->verbose && (long)jag->frameCount >= atol(ol)) { static int k = 0; if (k++ < 12) fprintf(stderr, "[cdovf] frame %llu VC=%d playFrame=%d bytePos=%d gpu@%06X run=%d\n", (unsigned long long)jag->frameCount, jag->halfLine, playFrame, bytePos, jag->gpu.pc, jag->gpu.running); } }
     }
     fifoPrev = w1;
     // Disc data reaches JERRY as the I2S frame; the BIOS boot loader reads it there.
@@ -356,8 +360,17 @@ uint16_t Butch::read16(uint32_t off) {
     case 0x12: return (uint16_t)((playing ? 1 : 0) | (i2cntrl & 2) | (i2cntrl & 8) | (fifoCount ? 1 << 4 : 0));
     case 0x14: case 0x16: return sbcntrl;
     case 0x24: case 0x26: case 0x28: case 0x2A: {
-        if (!fifoCount) return 0;
+        if (!fifoCount && playing && (i2cntrl & 4)) {
+            // The host reads faster than the emulated drive clock advances between
+            // time slices; on hardware the read would simply arrive a few cycles
+            // later, when the next sample is in. Deliver it now and charge the
+            // time, so the stream never grows a phantom zero long.
+            produceSample();
+            sampleAcc -= jag->clock() / (44100.0 * speed);
+        }
+        if (!fifoCount) { static const char* ol3 = getenv("JAG_CDOVF"); if (ol3 && jag->verbose && (long)jag->frameCount >= atol(ol3)) { static int k = 0; if (k++ < 6) fprintf(stderr, "[cdempty] frame %llu VC=%d off=%02X gpu@%06X playing=%d\n", (unsigned long long)jag->frameCount, jag->halfLine, off & 0xFE, jag->gpu.pc, (int)playing); } return 0; }
         uint32_t l = fifo[fifoR];
+        { static const char* ol4 = getenv("JAG_CDOVF"); if (ol4 && jag->verbose && (long)jag->frameCount >= atol(ol4) && !fifoLow) { static int k = 0; if (k++ < 100000) fprintf(stderr, "[cdread] f%llu VC=%d off=%02X %08X cnt=%d pf=%d bp=%d gpu@%06X\n", (unsigned long long)jag->frameCount, jag->halfLine, off & 0xFE, l, fifoCount, playFrame, bytePos, jag->gpu.pc); } }
         if (!fifoLow) { fifoLow = true; return (uint16_t)(l >> 16); }
         fifoLow = false; fifoR = (fifoR + 1) & 15; fifoCount--;
         updateIrq();
@@ -397,6 +410,7 @@ void Butch::tick(double sys) {
         seekDelay -= sys;
         if (seekDelay <= 0) {
             playFrame = seekTarget; bytePos = 0; playing = true; fifoClear();
+            if (jag->verbose && getenv("JAG_CDOVF") && (long)jag->frameCount >= atol(getenv("JAG_CDOVF"))) fprintf(stderr, "[cdseekdone] frame %llu VC=%d target=%d gpu=%d@%06X\n", (unsigned long long)jag->frameCount, jag->halfLine, seekTarget, jag->gpu.running, jag->gpu.pc);
             resp = {0x0100}; respPos = 0; respReady = true;
         }
     }
@@ -410,6 +424,7 @@ void Butch::updateIrq() {
     bool line = (ctrl & 1) && (((ctrl & 2) && fifoHalf()) || ((ctrl & 0x20) && respReady) ||
                                ((ctrl & 0x10) && respDelay <= 0 && pendingResp.empty()));
     if (line && !irqLine) {
+        static const char* ol2 = getenv("JAG_CDOVF"); if (ol2 && jag->verbose && (long)jag->frameCount >= atol(ol2)) { static int k = 0; if (k++ < 14) fprintf(stderr, "[cdirq] frame %llu VC=%d fifo=%d playing=%d gpu=%d@%06X\n", (unsigned long long)jag->frameCount, jag->halfLine, fifoCount, (int)playing, jag->gpu.running, jag->gpu.pc); }
         // The cartridge-port interrupt goes through JERRY's external latch: it
         // reaches the GPU as interrupt 1 and the 68000 if JERRY and TOM allow it.
         jag->gpu.raiseInt(1);

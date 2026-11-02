@@ -730,7 +730,8 @@ void Jaguar::runFrame() {
                 // blitter's full hold (Iron Soldier's mission start depends on the 68000
                 // being starved while its blits run).
                 const bool irqBusy = (tomIntPending & tomIntEnable & 0x1F) != 0 || (m68k_get_reg(nullptr, M68K_REG_SR) & 0x0700) != 0;
-                const double share = irqBusy ? blitShare : 1.0;
+                static const bool shareAlways = getenv("JAG_SHAREALWAYS") != nullptr;
+            const double share = (irqBusy || shareAlways) ? blitShare : 1.0;
                 double held = std::min(sliceSys, std::min(std::min(blitBusy, sliceSys), sliceSys * share) + riscBusUse);
                 int cyc = (int)(m68kPerSlice * (1.0 - held / sliceSys));
                 { static const char* hl = getenv("JAG_HELDLOG");
