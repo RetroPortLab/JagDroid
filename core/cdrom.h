@@ -53,10 +53,17 @@ struct CdImage {
 struct SerialEeprom {
     uint16_t mem[64];
     bool cs = false, clk = false, dout = true, writeEnable = false;
+    bool dirty = false;            // a word changed since the host last saved the chip
     int state = 0, bits = 0, op = 0, addr = 0;
     uint32_t shift = 0;
     SerialEeprom() { for (auto& w : mem) w = 0xFFFF; }
     void write(uint16_t v);        // new pin levels
+    void load(const uint8_t* data, size_t len) {   // big-endian bytes, up to 128
+        for (auto& w : mem) w = 0xFFFF;
+        for (size_t i = 0; i + 1 < len && i < 128; i += 2) mem[i / 2] = (uint16_t)(data[i] << 8 | data[i + 1]);
+        dirty = false;
+    }
+    void store(uint8_t* out128) const { for (int i = 0; i < 64; i++) { out128[i * 2] = mem[i] >> 8; out128[i * 2 + 1] = mem[i] & 0xFF; } }
 };
 
 // Butch: the CD unit's interface chip at $DFFF00. It passes drive (DSA) commands

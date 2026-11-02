@@ -29,6 +29,7 @@ int main(int argc, char** argv) {
     int frames = 120;
     bool verbose = false, pal = false;
     const char* eepromPath = nullptr;
+    const char* memTrackPath = nullptr;   // --memtrack file: the CD unit save chip (128 bytes)
     const char* cuePath = nullptr;      // Jaguar CD disc (the cart argument is then the CD BIOS)   // load before start, save at exit if the game wrote it
     const char* wavPath = nullptr;      // --wav file: write the sound output
     int smooth = 0;                     // --smooth N: also write the enhanced picture at N x (needs shade tracking)
@@ -36,7 +37,8 @@ int main(int argc, char** argv) {
     struct Hold { uint32_t mask; int from, to; };
     std::vector<Hold> holds;   // --hold <mask> <fromFrame> <toFrame>
     for (int i = 2; i < argc; i++) {
-        if (!strcmp(argv[i], "--bios") && i + 1 < argc) biosPath = argv[++i];
+        if (!strcmp(argv[i], "--memtrack") && i + 1 < argc) memTrackPath = argv[++i];
+        else if (!strcmp(argv[i], "--bios") && i + 1 < argc) biosPath = argv[++i];
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--out") && i + 1 < argc) outPath = argv[++i];
         else if (!strcmp(argv[i], "-v")) verbose = true;
@@ -75,6 +77,7 @@ int main(int argc, char** argv) {
         j->insertDisc(std::move(img));
     } else if (cuePath && !j->insertDisc(cuePath, &err)) { fprintf(stderr, "CD: %s\n", err.c_str()); return 1; }
     if (cuePath) for (auto& t : j->disc->tracks) printf("track %2d session %d start %d frames %d\n", t.number, t.session, t.start, t.frames);
+    if (memTrackPath) { auto mt = slurp(memTrackPath); if (!mt.empty()) j->setMemoryTrack(mt.data(), mt.size()); }
     j->reset();
     if (smooth > 0) j->setShadeTracking(true);
     std::vector<uint16_t> raw(jag::Jaguar::MAX_W * jag::Jaguar::MAX_H);
@@ -157,6 +160,7 @@ int main(int argc, char** argv) {
            m68k_get_reg(nullptr, M68K_REG_PC), j->gpu.running, (unsigned long long)j->gpu.instrCount,
            j->dsp.running, (unsigned long long)j->dsp.instrCount, (unsigned long long)j->blitCount,
            audioSamples, j->audioRate());
+    if (memTrackPath && j->memoryTrackDirty()) { uint8_t e[128]; j->getMemoryTrack(e); if (FILE* o = fopen(memTrackPath, "wb")) { fwrite(e, 1, sizeof e, o); fclose(o); printf("memory track saved to %s\n", memTrackPath); } }
     if (j->cdUnit && verbose) j->cd.debugDump();
 
     if (wavPath) {

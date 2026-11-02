@@ -194,11 +194,11 @@ void SerialEeprom::write(uint16_t v) {
             bits = 0; shift = 0;
             if (op == 2) { state = SE_READ; dout = false; shift = mem[addr]; bits = 16; }   // dummy 0, then data
             else if (op == 1) state = SE_WRITE;
-            else if (op == 3) { if (writeEnable) mem[addr] = 0xFFFF; state = SE_IDLE; }
+            else if (op == 3) { if (writeEnable) { mem[addr] = 0xFFFF; dirty = true; } state = SE_IDLE; }
             else switch (addr >> 4) {
                 case 3: writeEnable = true; state = SE_IDLE; break;
                 case 0: writeEnable = false; state = SE_IDLE; break;
-                case 2: if (writeEnable) for (auto& w : mem) w = 0xFFFF; state = SE_IDLE; break;
+                case 2: if (writeEnable) { for (auto& w : mem) w = 0xFFFF; dirty = true; } state = SE_IDLE; break;
                 default: state = SE_WRAL; break;
             }
         }
@@ -211,7 +211,7 @@ void SerialEeprom::write(uint16_t v) {
     case SE_WRAL:
         shift = (shift << 1) | di;
         if (++bits == 16) {
-            if (writeEnable) { if (state == SE_WRITE) mem[addr] = (uint16_t)shift; else for (auto& w : mem) w = (uint16_t)shift; }
+            if (writeEnable) { if (state == SE_WRITE) mem[addr] = (uint16_t)shift; else for (auto& w : mem) w = (uint16_t)shift; dirty = true; }
             state = SE_IDLE; dout = true;
         }
         break;
@@ -394,7 +394,7 @@ void Butch::write16(uint32_t off, uint16_t v) {
     case 0x16: sbcntrl = v; break;
     case 0x20: sbTime = (sbTime & 0xFFFF) | ((uint32_t)v << 16); break;
     case 0x22: sbTime = (sbTime & 0xFFFF0000u) | v; break;
-    case 0x2E: eeprom.write(v); break;
+    case 0x2E: { static long n = 0; if (jag->verbose && getenv("JAG_EELOG") && n++ < 300) fprintf(stderr, "[cd-ee] frame %llu 2E=%04X\n", (unsigned long long)jag->frameCount, v); } eeprom.write(v); break;
     default: break;
     }
 }

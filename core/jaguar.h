@@ -128,8 +128,14 @@ public:
     // The host loads it before reset and writes it out when eepromDirty is set.
     uint16_t eeprom[64];
     bool eepromDirty = false;
+    uint32_t rngState = 0x2545F491u;   // JERRY random number generator ($F1003A)
     void setEeprom(const uint8_t* data, size_t len);   // big-endian bytes, up to 128
     void getEeprom(uint8_t* out128) const;
+    // The CD unit's own save chip (what CD games and the BIOS keep their saves in).
+    void setMemoryTrack(const uint8_t* data, size_t len) { cd.eeprom.load(data, len); }
+    void getMemoryTrack(uint8_t* out128) const { cd.eeprom.store(out128); }
+    bool memoryTrackDirty() const { return cd.eeprom.dirty; }
+    void clearMemoryTrackDirty() { cd.eeprom.dirty = false; }
 
     // Jaguar CD: with a disc inserted the CD BIOS runs from the cartridge slot
     // and the Butch controller appears at $DFFF00.

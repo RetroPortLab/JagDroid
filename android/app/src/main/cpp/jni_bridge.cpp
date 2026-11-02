@@ -49,6 +49,13 @@ bool g_winHdr = false;                    // format the window is currently set 
 bool g_pal = false;                // region chosen in the menu; applied when a game loads
 std::string g_eepromPath;          // where this game's save chip lives
 
+// CD games share one save chip (the Jaguar CD unit's Memory Track storage); it lives
+// next to the per-game saves.
+std::string memoryTrackPath() {
+    size_t sl = g_eepromPath.find_last_of('/');
+    return sl == std::string::npos ? std::string() : g_eepromPath.substr(0, sl + 1) + "jaguar-cd-memory-track.bin";
+}
+
 std::mutex g_winLock;
 ANativeWindow* g_window = nullptr;
 int g_winW = 0, g_winH = 0;
@@ -370,6 +377,16 @@ void flushEepromLocked() {
     else LOG("could not write %s", g_eepromPath.c_str());
 }
 
+void flushMemoryTrackLocked() {
+    if (!g_emu || !g_emu->cdUnit || !g_emu->memoryTrackDirty()) return;
+    const std::string p = memoryTrackPath();
+    if (p.empty()) return;
+    uint8_t e[128];
+    g_emu->getMemoryTrack(e);
+    if (writeFileAtomic(p, e, sizeof e)) g_emu->clearMemoryTrackDirty();
+    else LOG("could not write %s", p.c_str());
+}
+
 void emuLoop() {
     using clk = std::chrono::steady_clock;
     const auto frameTime = std::chrono::nanoseconds((long long)(1e9 / g_emu->refreshHz()));  // 59.94 or 50 Hz
@@ -386,7 +403,7 @@ void emuLoop() {
             present();
             // Games write their save chip a few bits at a time; wait until it has
             // been quiet for a couple of seconds' worth of checks, then save.
-            if (++sinceFlush >= 120) { sinceFlush = 0; flushEepromLocked(); }
+            if (++sinceFlush >= 120) { sinceFlush = 0; flushEepromLocked(); flushMemoryTrackLocked(); }
         }
         if (++fpsFrames >= 15) {
             auto t = clk::now();
@@ -413,6 +430,7 @@ void emuLoop() {
     closeAudio();
     std::lock_guard<std::mutex> lk(g_emuLock);
     flushEepromLocked();
+    flushMemoryTrackLocked();
 }
 
 void stopThread() {
@@ -499,6 +517,7 @@ Java_com_retroportlab_jagdroid_NativeLib_loadDisc(JNIEnv* env, jclass, jbyteArra
     }, &g_error);
     if (!ok) return JNI_FALSE;
     g_emu->insertDisc(std::move(image));
+    { std::vector<uint8_t> mt; const std::string mp = memoryTrackPath(); if (!mp.empty() && readFile(mp, mt)) g_emu->setMemoryTrack(mt.data(), mt.size()); }
     std::vector<uint8_t> e;
     if (!g_eepromPath.empty() && readFile(g_eepromPath, e)) g_emu->setEeprom(e.data(), e.size());
     g_emu->reset();
@@ -575,6 +594,7 @@ Java_com_retroportlab_jagdroid_NativeLib_loadZipDisc(JNIEnv* env, jclass, jbyteA
     g_error.clear();
     if (!g_emu->loadCart(biosData, &g_error)) { g_error = "CD BIOS: " + g_error; return JNI_FALSE; }
     g_emu->insertDisc(std::move(image));
+    { std::vector<uint8_t> mt; const std::string mp = memoryTrackPath(); if (!mp.empty() && readFile(mp, mt)) g_emu->setMemoryTrack(mt.data(), mt.size()); }
     std::vector<uint8_t> e;
     if (!g_eepromPath.empty() && readFile(g_eepromPath, e)) g_emu->setEeprom(e.data(), e.size());
     g_emu->reset();
@@ -675,6 +695,7 @@ JNIEXPORT void JNICALL
 Java_com_retroportlab_jagdroid_NativeLib_flushSave(JNIEnv*, jclass) {
     std::lock_guard<std::mutex> lk(g_emuLock);
     flushEepromLocked();
+    flushMemoryTrackLocked();
 }
 
 // Save states are stored zlib-compressed: "JDZ1", original size, compressed data.

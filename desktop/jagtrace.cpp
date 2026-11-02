@@ -241,6 +241,7 @@ int main(int argc, char** argv) {
         std::ifstream bf(bp, std::ios::binary); std::vector<uint8_t> b((std::istreambuf_iterator<char>(bf)), std::istreambuf_iterator<char>());
         if (!J->loadBios(b, &err)) { fprintf(stderr, "BIOS: %s\n", err.c_str()); return 1; }
     }
+    if (const char* mtp = getenv("JAG_MEMTRACK")) { std::ifstream mf(mtp, std::ios::binary); std::vector<uint8_t> mb((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>()); J->setMemoryTrack(mb.data(), mb.size()); }
     J->reset();
     struct Hold { unsigned m; int a, b; };
     std::vector<Hold> holds;

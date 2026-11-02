@@ -314,6 +314,12 @@ bool Jaguar::tomReadHook(uint32_t off, int size, uint32_t& out) {
 
 bool Jaguar::jerryReadHook(uint32_t off, int size, uint32_t& out) {
     if (off == J_INT) { out = jerryIntPending; return true; }
+    if (off == 0x3A) {   // JERRY's random number generator: a new 16-bit value on every read
+        auto next = [&]() { rngState ^= rngState << 13; rngState ^= rngState >> 17; rngState ^= rngState << 5; return (uint16_t)(rngState >> 8); };
+        const uint16_t a = next();
+        out = (size == 4) ? ((uint32_t)a << 16 | next()) : a;
+        return true;
+    }
     if (cdUnit && (off & ~7u) == J_LTXD) {   // I2S receive (LRXD/RRXD): data from the CD unit
         uint32_t v = (off & 4) ? i2sRxR : i2sRxL;
         out = (size == 4) ? v : ((off & 2) ? v : 0);
@@ -548,6 +554,7 @@ void Jaguar::jerryWriteHook(uint32_t off, uint32_t value, int size) {
         if (verbose && getenv("JAG_JOYLOG") && (long)frameCount == atol(getenv("JAG_JOYLOG"))) { static int n = 0; if (n++ < 40) fprintf(stderr, "[joy] write %08X size %d by %d\n", value, size, busMaster); }
         joySelect = (size == 4) ? (value >> 16) : value; return;
     }
+    if ((off == 0x4800 || off == 0x5000) && verbose && getenv("JAG_EELOG")) { static long n = 0; if (n++ < 300) fprintf(stderr, "[cart-ee] frame %llu off=%04X val=%X size=%d\n", (unsigned long long)frameCount, off, value, size); }
     if (off == 0x4800) { eeSetDI((int)((size == 4) ? (value >> 16) : value) & 1); return; }   // EEPROM data in (clocks a bit)
     if (off == 0x5000) { eeSetCS(); return; }                                                 // EEPROM chip select
     if (off >= J_DSP_REGS && off < J_DSP_REGS_END) {
