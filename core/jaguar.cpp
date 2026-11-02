@@ -726,7 +726,12 @@ void Jaguar::runFrame() {
                 // shuts the CPU out entirely (Fight for Life's 2 ms blits froze it long
                 // enough to take its video interrupt tens of lines late).
                 static const double blitShare = getenv("JAG_BLITSHARE") ? atof(getenv("JAG_BLITSHARE")) : 0.75;
-                double held = std::min(sliceSys, std::min(std::min(blitBusy, sliceSys), sliceSys * blitShare) + riscBusUse);
+                // Only while an interrupt is pending or being serviced: otherwise keep the
+                // blitter's full hold (Iron Soldier's mission start depends on the 68000
+                // being starved while its blits run).
+                const bool irqBusy = (tomIntPending & tomIntEnable & 0x1F) != 0 || (m68k_get_reg(nullptr, M68K_REG_SR) & 0x0700) != 0;
+                const double share = irqBusy ? blitShare : 1.0;
+                double held = std::min(sliceSys, std::min(std::min(blitBusy, sliceSys), sliceSys * share) + riscBusUse);
                 int cyc = (int)(m68kPerSlice * (1.0 - held / sliceSys));
                 { static const char* hl = getenv("JAG_HELDLOG");
                   if (hl && (long)frameCount == atol(hl) && s == 0 && line < 120)

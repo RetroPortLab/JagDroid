@@ -377,7 +377,7 @@ void Jaguar::blitterGo() {
                     iv = inten;
                     stepI(inten);
                 }
-                out = (fromPhrase(patd, 16, dx) & 0xFF00) | ((iv >> 16) & 0xFF);
+                out = (fromPhrase(patd, 16, dstA.xadd == 0 ? dx : 3) & 0xFF00) | ((iv >> 16) & 0xFF);
                 ivUsed = iv;
             }
             if (dcompen) {
