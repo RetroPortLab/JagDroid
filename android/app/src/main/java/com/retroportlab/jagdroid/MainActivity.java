@@ -55,7 +55,7 @@ public class MainActivity extends Activity {
     private static final String[] HDR_PEAK_NAMES = {"2x", "3x", "4x"};
     private static final float[] HDR_PEAKS = {2f, 3f, 4f};
     private static final int SLOTS = 4;
-    private static final int SCREEN_LIBRARY = 0, SCREEN_SETTINGS = 1, SCREEN_GAME = 2, SCREEN_UPDATE = 3;
+    private static final int SCREEN_LIBRARY = 0, SCREEN_SETTINGS = 1, SCREEN_GAME = 2, SCREEN_UPDATE = 3, SCREEN_MEMTRACK = 4;
 
     private SharedPreferences prefs;
     private FrameLayout root;
@@ -472,6 +472,10 @@ public class MainActivity extends Activity {
         list.addView(row("Jaguar CD BIOS", cdBios == null ? "Not chosen: needed for CD games" : Uri.parse(cdBios).getLastPathSegment(),
                 "Choose", v -> pick(PICK_CDBIOS)));
 
+        list.addView(sectionTitle("Saves"));
+        list.addView(row("Memory Track", "The CD save cartridge: see what each game has saved, delete saves, free up space",
+                "Manage", v -> showMemoryTrack()));
+
         list.addView(sectionTitle("Controls"));
         list.addView(row("Button layout", "X = A   ·   A = B   ·   B = C   ·   Y / Select = Option   ·   Start = Pause\n"
                 + "L1 R1 L2 R2 = keypad 1-4   ·   L3 = 0   ·   R3 = #   ·   Select + Start = menu", null, v -> { }));
@@ -490,6 +494,49 @@ public class MainActivity extends Activity {
         first.requestFocus();
     }
 
+
+    // ---------------------------------------------------------- memory track --
+    private static String sizeText(long bytes) {
+        return bytes >= 1024 ? (bytes / 1024) + " KB" : bytes + " bytes";
+    }
+
+    /** Settings > Memory Track: the cartridge's files, with delete and erase-all. */
+    private void showMemoryTrack() {
+        screen = SCREEN_MEMTRACK;
+        MemoryTrack mt = new MemoryTrack(new File(saveDir(), "jaguar-cd-memory-track-cartridge.bin"));
+        LinearLayout list = new LinearLayout(this);
+        page("Memory Track", list, pill("Back", v -> showSettings()));
+        java.util.List<MemoryTrack.Entry> files = mt.list();
+        View first = row("Space", sizeText(mt.freeBytes()) + " free of " + sizeText(mt.totalBytes())
+                + (files.isEmpty() ? "\nNo saves yet. CD games that use the Memory Track create their files the first time they save." : ""),
+                null, v -> { });
+        list.addView(first);
+        if (!files.isEmpty()) list.addView(sectionTitle("Saved files (select to delete)"));
+        for (MemoryTrack.Entry e : files) {
+            final View[] self = new View[1];
+            final boolean[] armed = new boolean[1];
+            self[0] = row(e.app.isEmpty() ? "(unnamed)" : e.app, e.file + "  ·  " + sizeText(e.bytes()), "Delete", v -> {
+                if (!armed[0]) { armed[0] = true; setRowValue(self[0], "Sure?"); return; }
+                mt.delete(e);
+                toast("Deleted " + e.file);
+                showMemoryTrack();
+            });
+            list.addView(self[0]);
+        }
+        if (!files.isEmpty()) {
+            list.addView(sectionTitle("Everything"));
+            final View[] all = new View[1];
+            final boolean[] armedAll = new boolean[1];
+            all[0] = row("Erase all saves", "Deletes every file on the cartridge, for every game", "Erase", v -> {
+                if (!armedAll[0]) { armedAll[0] = true; setRowValue(all[0], "Sure?"); return; }
+                mt.eraseAll();
+                toast("Memory Track erased");
+                showMemoryTrack();
+            });
+            list.addView(all[0]);
+        }
+        first.requestFocus();
+    }
 
     // ------------------------------------------------------------- updates --
     /** On the library screen: quietly look for a new release now and then, and show a banner if there is one. */
@@ -1151,6 +1198,7 @@ public class MainActivity extends Activity {
                 if (up) {
                     if (menuOpen) closePauseMenu();
                     else if (screen == SCREEN_SETTINGS) showLibrary();
+                    else if (screen == SCREEN_MEMTRACK) showSettings();
                     else if (screen == SCREEN_UPDATE) { updateCancel = true; showSettings(); }
                     else if (code == KeyEvent.KEYCODE_BACK) finish();
                 }
