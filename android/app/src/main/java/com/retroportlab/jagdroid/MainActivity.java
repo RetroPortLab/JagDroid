@@ -48,7 +48,7 @@ public class MainActivity extends Activity {
     private static final int BG = 0xFF0D0E12, PANEL = 0xFF181A21, PANEL_FOCUS = 0xFF262A35;
     private static final int ACCENT = 0xFFE4002B, TEXT = 0xFFF2F2F5, SUBTEXT = 0xFF9AA0AE, BADGE = 0xFF2E7D4F;
 
-    private static final int PICK_GAME = 1, PICK_BIOS = 2, PICK_FOLDER = 3, PICK_CDBIOS = 4;
+    private static final int PICK_GAME = 1, PICK_BIOS = 2, PICK_FOLDER = 3, PICK_CDBIOS = 4, PICK_AUDIO = 5;
     private static final String[] REGION_NAMES = {"Auto", "NTSC (60 Hz)", "PAL (50 Hz)"};
     private static final String[] SCANLINE_NAMES = {"Off", "Light", "Strong", "LCD grid"};
     private static final String[] SCALE_NAMES = {"1x", "2x"};
@@ -275,7 +275,7 @@ public class MainActivity extends Activity {
         applyHdr();
         ui.removeCallbacks(fpsTick);
         LinearLayout list = new LinearLayout(this);
-        page("v" + versionName(), list, pill("Open file", v -> pick(PICK_GAME)), pill("Settings", v -> showSettings()));
+        page("v" + versionName(), list, pill("Music (VLM)", v -> pick(PICK_AUDIO)), pill("Open file", v -> pick(PICK_GAME)), pill("Settings", v -> showSettings()));
 
         String folder = prefs.getString("folder", null);
         if (folder == null) {
@@ -761,6 +761,7 @@ public class MainActivity extends Activity {
                 break;
             }
             case PICK_GAME: startGame(uri, null); break;
+            case PICK_AUDIO: startAudio(uri); break;
         }
     }
 
@@ -889,6 +890,54 @@ public class MainActivity extends Activity {
             for (android.os.ParcelFileDescriptor p : open) try { p.close(); } catch (Exception ignored) { }
         }
         enterGame(g);
+    }
+
+    /** Plays an audio file through the Jaguar CD BIOS player, with its VLM visualiser. */
+    private void startAudio(Uri uri) {
+        byte[] cdBios = cdBiosOrComplain();
+        if (cdBios == null) return;
+        String name = "Music";
+        try (Cursor c = getContentResolver().query(uri, new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null)) {
+            if (c != null && c.moveToFirst() && c.getString(0) != null) name = c.getString(0);
+        } catch (Exception ignored) { }
+        final Game g = new Game(uri, "VLM " + name.replaceFirst("\\.[^.]+$", "") + ".audio");
+        File dir = new File(getCacheDir(), "audiodisc");
+        deleteTree(dir);
+
+        screen = SCREEN_SETTINGS;
+        LinearLayout box = new LinearLayout(this);
+        page("Preparing " + name, box, pill("Cancel", v -> AudioDisc.cancel = true));
+        TextView status = text("Decoding audio…", 16, TEXT, false);
+        box.addView(status);
+        TextView hint = text("The file is converted to a CD audio track for the Jaguar CD BIOS. Press Play (the B button) on the player, and choose VLM for the visualiser.", 14, SUBTEXT, false);
+        hint.setPadding(0, dp(8), 0, 0);
+        box.addView(hint);
+        Runnable poll = new Runnable() {
+            @Override public void run() {
+                float p = AudioDisc.progress;
+                if (p >= 0) status.setText(String.format(Locale.US, "Decoding audio… %d%%", Math.round(p * 100)));
+                if (status.isAttachedToWindow()) ui.postDelayed(this, 250);
+            }
+        };
+        ui.postDelayed(poll, 250);
+        new Thread(() -> {
+            String err = AudioDisc.build(this, uri, dir);
+            ui.post(() -> {
+                ui.removeCallbacks(poll);
+                if (err != null) { toast(err); showLibrary(); return; }
+                try (android.os.ParcelFileDescriptor pfd = android.os.ParcelFileDescriptor.open(new File(dir, "track.bin"), android.os.ParcelFileDescriptor.MODE_READ_ONLY)) {
+                    NativeLib.setPal(false);
+                    NativeLib.setEepromPath(new File(saveDir(), "vlm.eep").getAbsolutePath());
+                    NativeLib.setScanlines(prefs.getInt("scanlines", 0));
+                    applyEnhancements();
+                    String cue = "FILE \"track.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n";
+                    if (!NativeLib.loadDisc(cdBios, cue, new String[]{"track.bin"}, new int[]{pfd.getFd()})) {
+                        toast(NativeLib.lastError()); showLibrary(); return;
+                    }
+                } catch (Exception e) { toast("Couldn't open the audio disc: " + e.getMessage()); showLibrary(); return; }
+                enterGame(g);
+            });
+        }).start();
     }
 
     /** Zipped CD: unpacks compressed tracks into the cache (once) with a progress screen. */

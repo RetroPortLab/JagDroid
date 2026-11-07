@@ -107,6 +107,11 @@ struct Butch {
     uint16_t fifoPrev = 0;        // right word of the previous frame (see produceSample)
     bool fifoHalf() const { return fifoCount >= 8; }
     bool irqLine = false;
+    // Subcode Q: one 12-byte packet per sector, served a byte at a time (12 chunks per sector).
+    bool subPending = false;
+    int subChunk = 0x0F, subIdx = 0, subLastIdx = -1;
+    uint8_t subQ[12] = {};
+    void subcodeStep(int frame, int sample);
     uint64_t dataWords = 0, fifoOverflows = 0;       // debug: words delivered
 
     void reset();

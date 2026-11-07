@@ -233,7 +233,7 @@ void Butch::reset() {
     sbcntrl = 0; dscntrl = 0; sbTime = 0;
     eeprom.cs = eeprom.clk = false; eeprom.state = 0; eeprom.dout = true;
     resp.clear(); respPos = 0; respReady = false; respDelay = 0; pendingResp.clear();
-    playing = false; playFrame = 150; bytePos = 0; sectorFrame = -1; seekDelay = 0;
+    subPending = false; subChunk = 0x0F; subLastIdx = -1; playing = false; playFrame = 150; bytePos = 0; sectorFrame = -1; seekDelay = 0;
     fifoClear(); sampleAcc = 0; irqLine = false; speed = 2;
 }
 
@@ -253,7 +253,7 @@ void Butch::command(uint16_t cmd) {
     auto toMsf = [](int frame, int& m, int& s, int& f) { m = frame / 4500; s = (frame / 75) % 60; f = frame % 75; };
     switch (op) {
     case 0x01: {                                   // play title
-        for (auto& t : disc->tracks) if (t.number == arg) { playFrame = t.start; bytePos = 0; playing = true; }
+        for (auto& t : disc->tracks) if (t.number == arg) { playFrame = t.start; bytePos = 0; playing = true; subLastIdx = -1; }
         respond({(uint16_t)(0x0100 | arg)}, CMD_DELAY * 20);
         break;
     }
@@ -319,8 +319,31 @@ uint16_t Butch::nextDataWord() {
     return w;
 }
 
+void Butch::subcodeStep(int frame, int sample) {
+    int idx = sample / 49; if (idx > 11) idx = 11;
+    if (idx == subLastIdx) return;
+    subLastIdx = idx;
+    if (idx == 0) {
+        auto bcd = [](int v) { return (uint8_t)(((v / 10) << 4) | (v % 10)); };
+        const CdImage::Track* t = nullptr;
+        for (auto& tr : disc->tracks) if (tr.start <= frame + 150 || !t) { if (tr.start <= frame) t = &tr; }
+        int tno = t ? t->number : 1, rel = t ? frame - t->start : frame;
+        int index = rel < 0 ? 0 : 1; if (rel < 0) rel = -rel;
+        int am = frame / 4500, as = (frame / 75) % 60, af = frame % 75;
+        int rm = rel / 4500, rs = (rel / 75) % 60, rf = rel % 75;
+        subQ[0] = (t && t->data) ? 0x41 : 0x01; subQ[1] = bcd(tno); subQ[2] = (uint8_t)index;
+        subQ[3] = bcd(rm); subQ[4] = bcd(rs); subQ[5] = bcd(rf); subQ[6] = 0;
+        subQ[7] = bcd(am); subQ[8] = bcd(as); subQ[9] = bcd(af);
+        uint16_t crc = 0;
+        for (int i = 0; i < 10; i++) { crc ^= (uint16_t)subQ[i] << 8; for (int b = 0; b < 8; b++) crc = (crc & 0x8000) ? (crc << 1) ^ 0x1021 : (crc << 1); }
+        crc = ~crc; subQ[10] = crc >> 8; subQ[11] = crc & 0xFF;
+    }
+    subIdx = idx; subChunk = 0x10 + idx; subPending = true;
+}
+
 void Butch::produceSample() {
     uint16_t w0 = 0, w1 = 0;
+    if (playing && disc) subcodeStep(playFrame, bytePos / 4);
     if (playing && disc) { w0 = nextDataWord(); w1 = nextDataWord(); }
     if (jag->verbose && getenv("JAG_CDFIFO") && playing && (playFrame == atoi(getenv("JAG_CDFIFO")) || playFrame == atoi(getenv("JAG_CDFIFO")) + 1) && bytePos < 400 + 4)
         fprintf(stderr, "[fifo] f%d b%d %04X%04X cnt=%d\n", playFrame, bytePos, w0, w1, fifoCount);
@@ -347,7 +370,7 @@ uint16_t Butch::read16(uint32_t off) {
     // The low half reads back the interrupt enables with the live status bits
     // in 9-14, so read-modify-write of BUTCH keeps the master enable.
     case 0x02: return (uint16_t)((ctrl & 0x81FF) | (fifoHalf() ? 1 << 9 : 0) | (respDelay <= 0 && pendingResp.empty() ? 1 << 12 : 0) |
-                                 (respReady ? 1 << 13 : 0));
+                                 (respReady ? 1 << 13 : 0) | (subPending ? 1 << 11 : 0));
     case 0x04: case 0x06: return dscntrl;
     case 0x0A: {
         if (!respReady || respPos >= resp.size()) return resp.empty() ? 0 : resp.back();
@@ -358,7 +381,10 @@ uint16_t Butch::read16(uint32_t off) {
     }
     case 0x10: return 0;
     case 0x12: return (uint16_t)((playing ? 1 : 0) | (i2cntrl & 2) | (i2cntrl & 8) | (fifoCount ? 1 << 4 : 0));
-    case 0x14: case 0x16: return sbcntrl;
+    case 0x14: case 0x16: subPending = false; updateIrq(); return sbcntrl;
+    case 0x18: return 0;
+    case 0x1A: return (uint16_t)(subQ[subIdx] << 8 | subChunk);
+    case 0x1C: case 0x1E: return 0;
     case 0x24: case 0x26: case 0x28: case 0x2A: {
         if (!fifoCount && playing && (i2cntrl & 4)) {
             // The host reads faster than the emulated drive clock advances between
@@ -421,7 +447,7 @@ void Butch::tick(double sys) {
 }
 
 void Butch::updateIrq() {
-    bool line = (ctrl & 1) && (((ctrl & 2) && fifoHalf()) || ((ctrl & 0x20) && respReady) ||
+    bool line = (ctrl & 1) && (((ctrl & 2) && fifoHalf()) || ((ctrl & 0x20) && respReady) || ((ctrl & 0xC) && subPending) ||
                                ((ctrl & 0x10) && respDelay <= 0 && pendingResp.empty()));
     if (line && !irqLine) {
         static const char* ol2 = getenv("JAG_CDOVF"); if (ol2 && jag->verbose && (long)jag->frameCount >= atol(ol2)) { static int k = 0; if (k++ < 14) fprintf(stderr, "[cdirq] frame %llu VC=%d fifo=%d playing=%d gpu=%d@%06X\n", (unsigned long long)jag->frameCount, jag->halfLine, fifoCount, (int)playing, jag->gpu.running, jag->gpu.pc); }

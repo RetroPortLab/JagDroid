@@ -22,6 +22,7 @@ third-party code is Musashi (68000 core, MIT licence, `third_party/Musashi`).
 | Jaguar CD saves (the CD unit save chip, shared by all discs) | Yes, kept in `jaguar-cd-memory-track.bin` |
 | Memory Track cartridge (the 128 KB CD save cartridge, emulated at the NVM BIOS level), kept in `jaguar-cd-memory-track-cartridge.bin` | Yes |
 | Memory Track manager (Settings > Saves: list, delete, erase) | Yes |
+| Play an audio file through the CD BIOS player and VLM visualiser (library > Music (VLM)) | Yes |
 | Jaguar CD audio tracks, .cdi images, the original on-console manager screen | Not yet |
 | Cycle-accurate timing | Approximate |
 | Display enhancements: smooth Gouraud shading, 2x render scale | Optional, off by default; never change emulation |
