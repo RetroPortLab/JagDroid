@@ -272,6 +272,11 @@ void Risc::run(int cycles) {
     if (budget < 0) cycleDebt = -budget;
 }
 
+static bool gpcMatch(uint32_t a) {
+    static std::vector<uint32_t> v = [] { std::vector<uint32_t> r; if (const char* e = getenv("JAG_GPCPC")) { char* p = (char*)e; while (*p) { char* q; r.push_back((uint32_t)strtoul(p, &q, 16)); if (q == p) break; p = *q ? q + 1 : q; } } return r; }();
+    for (uint32_t x : v) if (x == a) return true;
+    return false;
+}
 static bool oldMmAll() { static bool v = getenv("JAG_X_OLDMM") != nullptr; return v; }
 static inline uint32_t quick(int n) { return n == 0 ? 32u : (uint32_t)n; }
 
@@ -319,8 +324,8 @@ void Risc::step() {
             }
         }
     }
-    if (!isDsp && jag->verbose && getenv("JAG_GPCLOG") && (long)jag->frameCount == atol(getenv("JAG_GPCLOG")) && addr == (uint32_t)strtoul(getenv("JAG_GPCPC"), nullptr, 16)) {
-        fprintf(stderr, "[gpc] f%ld vc=%d", (long)jag->frameCount, jag->halfLine);
+    if (!isDsp && jag->verbose && getenv("JAG_GPCLOG") && (long)jag->frameCount == atol(getenv("JAG_GPCLOG")) && gpcMatch(addr)) {
+        fprintf(stderr, "[gpc] f%ld vc=%d pc=%06X", (long)jag->frameCount, jag->halfLine, addr);
         for (int i = 0; i < 32; i++) fprintf(stderr, " r%d=%X", i, R(i));
         fprintf(stderr, "\n");
     }
@@ -406,16 +411,16 @@ void Risc::step() {
         else { setC(D >> 31); D = -s >= 32 ? 0 : D << -s; }
         setZN(D); break;
     }
-    case 24: { int n = 32 - r1; setC(D >> 31); D = n >= 32 ? 0 : D << n; setZN(D); break; } // SHLQ
+    case 24: { int n = 32 - r1; static const bool shc = getenv("JAG_X_SHC") != nullptr; setC(shc && n > 0 && n < 33 ? (D >> (32 - n)) & 1 : D >> 31); D = n >= 32 ? 0 : D << n; setZN(D); break; } // SHLQ
     // SHLQ stores 32-n in the instruction, but SHRQ/SHARQ store n itself (0 = 32).
-    case 25: { int n = (int)quick(r1); setC(D & 1); D = n >= 32 ? 0 : D >> n; setZN(D); break; } // SHRQ
+    case 25: { int n = (int)quick(r1); static const bool shc = getenv("JAG_X_SHC") != nullptr; setC(shc && n > 0 ? (D >> (n - 1)) & 1 : D & 1); D = n >= 32 ? 0 : D >> n; setZN(D); break; } // SHRQ
     case 26: {                                                                                // SHA
         int32_t s = (int32_t)S;
         if (s >= 0) { setC(D & 1); D = (uint32_t)((int32_t)D >> (s > 31 ? 31 : s)); }
         else { setC(D >> 31); D = -s >= 32 ? 0 : D << -s; }
         setZN(D); break;
     }
-    case 27: { int n = (int)quick(r1); setC(D & 1); D = (uint32_t)((int32_t)D >> (n > 31 ? 31 : n)); setZN(D); break; } // SHARQ
+    case 27: { int n = (int)quick(r1); static const bool shc = getenv("JAG_X_SHC") != nullptr; setC(shc && n > 0 ? (D >> (n - 1)) & 1 : D & 1); D = (uint32_t)((int32_t)D >> (n > 31 ? 31 : n)); setZN(D); break; } // SHARQ
     case 28: { int n = S & 31; setC(D >> 31); D = n ? (D >> n) | (D << (32 - n)) : D; setZN(D); break; } // ROR
     case 29: { int n = r1 & 31; setC(D >> 31); D = n ? (D >> n) | (D << (32 - n)) : D; setZN(D); break; } // RORQ
     case 30: { uint32_t r = D - S; setZN(r); setC(D < S); break; }                           // CMP

@@ -291,7 +291,12 @@ void Jaguar::blitterGo() {
             }
             if (a2.xadd == 0) {
                 int p2 = 64 / a2.bpp;
-                a2EndPhrase = phraseEnd(a2x0, p2, nphr, a2.xsign);
+                int n2 = nphr;
+                if (!dsta2 && !getenv("JAG_X_OLDA2")) {   // source phrases actually touched (misaligned source reads one more)
+                    int off = a2.xsign ? (p2 - 1 - floorMod(a2x0, p2)) : floorMod(a2x0, p2);
+                    n2 = std::max(nphr, (off + inner + p2 - 1) / p2);
+                }
+                a2EndPhrase = phraseEnd(a2x0, p2, n2, a2.xsign);
             }
         }
         // Bit expansion reads the source at its own depth and steps through
@@ -413,15 +418,27 @@ void Jaguar::blitterGo() {
                 // save area (Z 0), copying the brick over it and copying that
                 // back, which only removes the brick when equal-Z pixels are
                 // inhibited in the middle copy.
-                const bool zcmp = (zbuff && dstenz) || (srcenz && !dstenz && zmode != 0);
+                static const bool noZ = getenv("JAG_X_NOZ") != nullptr;
+                const bool zcmp = !noZ && (zbuff && dstenz) || (srcenz && !dstenz && zmode != 0);
                 if (zcmp && zaddr != 0xFFFFFFFFu) {
                     uint32_t dstZ = dstenz ? j_read16(this, zaddr) : 0;
-                    if (((zmode & 1) && srcZ < dstZ) || ((zmode & 2) && srcZ == dstZ) ||
-                        ((zmode & 4) && srcZ > dstZ))
+                    // Battle Morph clears its Z buffer to $F280 and relies on the far terrain still
+                    // drawing (dark, to the horizon) rather than being cut by that value; with a
+                    // strict compare the cut line shows as a striped diagonal wedge. A clear value
+                    // of exactly $F280 therefore counts as 'nothing there yet'.
+                    static const bool zfar = getenv("JAG_X_ZFAR") != nullptr; if (zfar && dstZ == 0xF280) dstZ = 0xFFFF;
+                    static const int zsh = getenv("JAG_X_ZSH") ? atoi(getenv("JAG_X_ZSH")) : 0;
+                    const uint32_t sZ = srcZ >> zsh, dZ = dstZ >> zsh;
+                    if (((zmode & 1) && sZ < dZ) || ((zmode & 2) && sZ == dZ) ||
+                        ((zmode & 4) && sZ > dZ))
                         inhibit = true;
                 }
             }
 
+            { static int bx0=-1,by0,bx1,by1; static long bf=-1; static bool init=false;
+              if (!init) { init=true; if (const char* e=getenv("JAG_BLITPIX")) sscanf(e,"%ld:%d:%d:%d:%d",&bf,&bx0,&by0,&bx1,&by1); }
+              if (bf>=0 && (long)frameCount>=bf && (long)frameCount<=bf+(getenv("JAG_BLITPIXN")?atol(getenv("JAG_BLITPIXN")):0) && dx>=bx0 && dx<=bx1 && dy>=by0 && dy<=by1)
+                  fprintf(stderr,"[bpix] f%llu (%d,%d) cmd=%08X by=%d inh=%d out=%04X srcZ=%04X dstZ=%04X zmode=%d gpuPC=%06X blit=%llu za=%06X pa=%06X zo=%d\n",(unsigned long long)frameCount,(int)dx,(int)dy,cmd,prevMaster,(int)inhibit,out&0xFFFF,srcZ,(zaddr!=0xFFFFFFFFu&&useZ)?j_read16(this,zaddr):0,zmode,gpu.pc,(unsigned long long)blitCount,zaddr,[&]{uint32_t b; return pixelAddrBits(dstA,dx,dy,b);}(),dstA.zoffs); }
             if (!inhibit) {
                 uint32_t m = dstA.bpp >= 32 ? 0xFFFFFFFFu : ((1u << dstA.bpp) - 1);
                 writePix(this, dstA, dx, dy, out & m);

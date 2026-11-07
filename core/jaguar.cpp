@@ -19,6 +19,15 @@ namespace jag {
 
 Jaguar* g_jag = nullptr;
 
+// diagnostics: JAG_MEMW="frame:addr:len" (hex addr/len) prints DRAM writes in that range
+static void memWatch(Jaguar* j, uint32_t a, uint32_t v, int size) {
+    static long wf = -2; static uint32_t wa = 0, wl = 0;
+    if (wf == -2) { wf = -1; if (const char* e = getenv("JAG_MEMW")) { unsigned long long x, y; if (sscanf(e, "%ld:%llx:%llx", &wf, &x, &y) == 3) { wa = (uint32_t)x; wl = (uint32_t)y; } } }
+    { static bool dumped = false; if (!dumped && getenv("JAG_MEMWDUMP") && j->busMaster == 1 && (long)j->frameCount >= wf && a >= wa && a < wa + wl) { dumped = true; FILE* o = fopen(getenv("JAG_MEMWDUMP"), "wb"); if (o) { for (unsigned k = 0; k < 0x1000; k++) fputc(j->read8(0xF03000 + k), o); fclose(o); } } }
+    if (wf >= 0 && j->verbose && (long)j->frameCount >= wf && (long)j->frameCount <= wf + 1 && a >= wa && a < wa + wl)
+        fprintf(stderr, "[memw] f%llu vc=%d %06X <= %0*X (%d) gpuPC=%06X bus=%d\n", (unsigned long long)j->frameCount, j->halfLine, a, size * 2, v, size, j->gpu.pc, j->busMaster);
+}
+
 // TOM register offsets (relative to $F00000)
 enum : uint32_t {
     T_MEMCON1 = 0x00, T_MEMCON2 = 0x02, T_HC = 0x04, T_VC = 0x06,
@@ -448,7 +457,7 @@ void Jaguar::write16(uint32_t a, uint16_t v) {
     if (a < 0x800000 && a >= DRAM_SIZE) return;   // empty
     if (cdUnit && a == 0xDFFFE0) { nvmCall(); return; }   // Memory Track module trigger (see memtrack.cpp)
     if (cdUnit && a >= 0xDFFF00 && a < 0xE00000) { cd.write16(a & 0xFE, v); return; }
-    if (a < DRAM_SIZE) { TRACE_W(a, v, 2); uint8_t* p = &dram[a]; p[0] = v >> 8; p[1] = v & 0xFF; return; }
+    if (a < DRAM_SIZE) { TRACE_W(a, v, 2); memWatch(this, a, v, 2); uint8_t* p = &dram[a]; p[0] = v >> 8; p[1] = v & 0xFF; return; }
     if (a >= 0xF00000 && a < 0xF04000) {
         uint32_t off = a - 0xF00000;
         tom[off] = v >> 8; tom[off + 1] = v & 0xFF;
@@ -470,7 +479,7 @@ void Jaguar::write32(uint32_t a, uint32_t v) {
     if (a >= DRAM_SIZE && a < 0x800000) return;   // empty
     if (a < DRAM_SIZE) {
         uint32_t o = a & (DRAM_SIZE - 1);
-        TRACE_W(a, v, 4);
+        TRACE_W(a, v, 4); memWatch(this, a, v, 4);
         if (o <= DRAM_SIZE - 4) {
             uint8_t* p = &dram[o];
             p[0] = v >> 24; p[1] = (v >> 16) & 0xFF; p[2] = (v >> 8) & 0xFF; p[3] = v & 0xFF;
