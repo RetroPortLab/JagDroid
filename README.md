@@ -20,7 +20,8 @@ third-party code is Musashi (68000 core, MIT licence, `third_party/Musashi`).
 | Cart EEPROM saves, save states | Working |
 | Jaguar CD: Butch controller, DSA drive commands, multi-session .cue/.bin, boot via the real CD BIOS | Battle Morph boots to its intro and title; other discs untested |
 | Jaguar CD saves (the CD unit save chip, shared by all discs) | Yes, kept in `jaguar-cd-memory-track.bin` |
-| Jaguar CD audio tracks, Memory Track cartridge hardware, .cdi images | Not yet |
+| Memory Track cartridge (the 128 KB CD save cartridge, emulated at the NVM BIOS level), kept in `jaguar-cd-memory-track-cartridge.bin` | Yes |
+| Jaguar CD audio tracks, .cdi images, the Memory Track's manager screen | Not yet |
 | Cycle-accurate timing | Approximate |
 | Display enhancements: smooth Gouraud shading, 2x render scale | Optional, off by default; never change emulation |
 

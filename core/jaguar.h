@@ -136,6 +136,15 @@ public:
     void getMemoryTrack(uint8_t* out128) const { cd.eeprom.store(out128); }
     bool memoryTrackDirty() const { return cd.eeprom.dirty; }
     void clearMemoryTrackDirty() { cd.eeprom.dirty = false; }
+    // The Memory Track cartridge (128 KB of save flash behind the NVM BIOS module that
+    // CD games call at $2404); see memtrack.cpp. Saves are kept by the host like the others.
+    static const size_t NVM_SIZE = 128 * 1024;
+    std::vector<uint8_t> nvm;
+    bool nvmDirty = false, nvmEnabled = true, nvmInstalled = false;
+    void setNvm(const uint8_t* data, size_t len);
+    const uint8_t* nvmData() const { return nvm.data(); }
+    void nvmInstall();   // put the module stub into RAM at $2400
+    void nvmCall();      // run one module call (from the stub's trigger write)
 
     // Jaguar CD: with a disc inserted the CD BIOS runs from the cartridge slot
     // and the Butch controller appears at $DFFF00.

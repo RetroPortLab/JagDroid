@@ -193,6 +193,7 @@ void Jaguar::reset() {
     blitBusy = 0; blitIntPending = false;
     eeState = 0; eeBits = 0; eeWriteEnable = false;
     cd.reset();
+    nvmInstalled = false;
 
     // Sensible NTSC video defaults (games normally program their own).
     auto setT = [&](uint32_t off, uint16_t v) { tom[off] = v >> 8; tom[off + 1] = v & 0xFF; };
@@ -445,6 +446,7 @@ void Jaguar::write16(uint32_t a, uint16_t v) {
     a &= 0xFFFFFE;
     if ((a & 0xFFC000) == 0xF08000) a -= 0x8000;   // TOM mirror ($F08000-$F0BFFF)
     if (a < 0x800000 && a >= DRAM_SIZE) return;   // empty
+    if (cdUnit && a == 0xDFFFE0) { nvmCall(); return; }   // Memory Track module trigger (see memtrack.cpp)
     if (cdUnit && a >= 0xDFFF00 && a < 0xE00000) { cd.write16(a & 0xFE, v); return; }
     if (a < DRAM_SIZE) { TRACE_W(a, v, 2); uint8_t* p = &dram[a]; p[0] = v >> 8; p[1] = v & 0xFF; return; }
     if (a >= 0xF00000 && a < 0xF04000) {
@@ -764,6 +766,8 @@ void Jaguar::runFrame() {
             if (cdUnit) cd.tick(sysPerLine / SLICES);
         }
     }
+    // Memory Track: the CD BIOS puts its module in RAM before it boots the disc.
+    if (cdUnit && nvmEnabled && !nvmInstalled && cd.dataWords > 0) nvmInstall();
     frameCount++;
 }
 

@@ -9,6 +9,7 @@ add_library(jagcore STATIC
   ${JAG_ROOT}/core/blitter.cpp
   ${JAG_ROOT}/core/savedata.cpp
   ${JAG_ROOT}/core/cdrom.cpp
+  ${JAG_ROOT}/core/memtrack.cpp
   ${JAG_ROOT}/core/enhance.cpp
   ${JAG_ROOT}/core/zipfile.cpp
   ${MUSASHI}/m68kcpu.c
