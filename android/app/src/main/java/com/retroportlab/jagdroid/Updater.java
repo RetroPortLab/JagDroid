@@ -74,7 +74,7 @@ final class Updater {
     private static HttpURLConnection open(String url) throws IOException {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
+        c.setReadTimeout(60000);
         c.setRequestProperty("User-Agent", "JagDroid-updater");
         c.setInstanceFollowRedirects(true);   // asset downloads redirect to GitHub's storage host
         return c;
@@ -125,6 +125,20 @@ final class Updater {
 
     /** Downloads the release's APK into the cache. Returns null if cancelled. */
     static File download(Context ctx, Release r, Progress p) throws IOException {
+        IOException last = null;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            try {
+                return downloadOnce(ctx, r, p);
+            } catch (IOException e) {
+                last = e;
+                try { Thread.sleep(1500L * attempt); } catch (InterruptedException ie) { break; }
+            }
+        }
+        String why = last.getMessage() != null ? last.getMessage() : "no details";
+        throw new IOException("Download failed: " + last.getClass().getSimpleName() + " - " + why + " (tried 3 times)");
+    }
+
+    private static File downloadOnce(Context ctx, Release r, Progress p) throws IOException {
         File dir = new File(ctx.getCacheDir(), "update");
         dir.mkdirs();
         File[] old = dir.listFiles();
