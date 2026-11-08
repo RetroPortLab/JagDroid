@@ -117,6 +117,9 @@ uint32_t Risc::readCtrlReg(uint32_t off) {
         uint32_t v = running ? 1 : 0;
         if (singleStep) v |= 8;
         v |= (intLatch & 0x3F) << 6;
+        // Bits 12-15 read back the chip version. Syndicate and Theme Park poll GPU_CTRL with
+        // asr.w #1 and use divs.w d0,d0 as a delay, which traps if the word reads as zero.
+        if (!getenv("JAG_X_NOVERSION")) v |= 0x2000;
         return v;
     }
     case 0x18: return isDsp ? modMask : hidata;

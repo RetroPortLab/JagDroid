@@ -223,7 +223,7 @@ extern "C" void jag_trace_pc(unsigned int pc) {
         for (int r = M68K_REG_A0; r <= M68K_REG_A7; r++) fprintf(stderr, " %08X", m68k_get_reg(nullptr, (m68k_register_t)r));
         fprintf(stderr, "\n");
     }
-    bool ok = pc < 0x200000 || (pc >= 0x800000 && pc < 0xE00000) || (pc >= 0xE00000 && pc < 0xE20000 && getenv("JAG_BIOS"));
+    bool ok = (pc < 0x200000 && !(getenv("JAG_LOWPC") && pc < 0x400)) || (pc >= 0x800000 && pc < 0xE00000) || (pc >= 0xE00000 && pc < 0xE20000 && getenv("JAG_BIOS"));
     if (!ok && !crashed) {
         crashed = true;
         fprintf(stderr, "\n*** 68000 left code memory: PC=$%06X at frame %llu, VC=%d\n",
