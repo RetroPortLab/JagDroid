@@ -37,7 +37,7 @@ final class Updater {
 
     /** A published release that has an APK attached. */
     static final class Release {
-        String tag, name, notes, apkUrl, pageUrl;
+        String tag, name, notes, apkUrl, apiUrl, pageUrl;
         long apkSize;
     }
 
@@ -110,6 +110,7 @@ final class Updater {
                     rel.notes = r.optString("body", "");
                     rel.pageUrl = r.optString("html_url", RELEASES_PAGE);
                     rel.apkUrl = a.optString("browser_download_url");
+                    rel.apiUrl = a.optString("url");   // the API route, a different path to the same file
                     rel.apkSize = a.optLong("size");
                     if (best == null || newer(rel.tag, best.tag)) best = rel;
                     break;
@@ -126,25 +127,26 @@ final class Updater {
     /** Downloads the release's APK into the cache. Returns null if cancelled. */
     static File download(Context ctx, Release r, Progress p) throws IOException {
         IOException last = null;
-        for (int attempt = 1; attempt <= 3; attempt++) {
+        for (int attempt = 1; attempt <= 4; attempt++) {
             try {
-                return downloadOnce(ctx, r, p);
+                return downloadOnce(ctx, r, p, attempt == 2 && !r.apiUrl.isEmpty());
             } catch (IOException e) {
                 last = e;
-                try { Thread.sleep(1500L * attempt); } catch (InterruptedException ie) { break; }
+                try { Thread.sleep(3000L * attempt); } catch (InterruptedException ie) { break; }
             }
         }
         String why = last.getMessage() != null ? last.getMessage() : "no details";
-        throw new IOException("Download failed: " + last.getClass().getSimpleName() + " - " + why + " (tried 3 times)");
+        throw new IOException("Download failed: " + last.getClass().getSimpleName() + " - " + why + " (tried 4 times)");
     }
 
-    private static File downloadOnce(Context ctx, Release r, Progress p) throws IOException {
+    private static File downloadOnce(Context ctx, Release r, Progress p, boolean viaApi) throws IOException {
         File dir = new File(ctx.getCacheDir(), "update");
         dir.mkdirs();
         File[] old = dir.listFiles();
         if (old != null) for (File f : old) f.delete();
         File out = new File(dir, "JagDroid-" + r.tag + ".apk");
-        HttpURLConnection c = open(r.apkUrl);
+        HttpURLConnection c = open(viaApi ? r.apiUrl : r.apkUrl);
+        if (viaApi) c.setRequestProperty("Accept", "application/octet-stream");
         try {
             if (c.getResponseCode() != 200) throw new IOException("Download failed (" + c.getResponseCode() + ")");
             long total = c.getContentLengthLong() > 0 ? c.getContentLengthLong() : r.apkSize, done = 0;
