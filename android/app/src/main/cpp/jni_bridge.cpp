@@ -165,6 +165,9 @@ aaudio_data_callback_result_t audioCb(AAudioStream*, void*, void* data, int32_t 
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
+std::atomic<bool> g_audioDead{false};   // the stream reported an error or stopped pulling data
+void audioErr(AAudioStream*, void*, aaudio_result_t) { g_audioDead.store(true); }
+
 void closeAudio() {
     if (g_stream) { AAudioStream_requestStop(g_stream); AAudioStream_close(g_stream); g_stream = nullptr; }
     g_streamRate = 0;
@@ -180,6 +183,8 @@ void openAudio(int rate) {
     g_resampler.reset();
     g_ringW = 0; g_ringR = 0; g_ringPrimed = false; g_lastL = g_lastR = 0;
     AAudioStreamBuilder_setDataCallback(b, audioCb, nullptr);
+    AAudioStreamBuilder_setErrorCallback(b, audioErr, nullptr);
+    g_audioDead = false;
     AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
     if (AAudioStreamBuilder_openStream(b, &g_stream) == AAUDIO_OK) {
         int32_t burst = AAudioStream_getFramesPerBurst(g_stream);
@@ -467,6 +472,20 @@ void emuLoop() {
         }
 
         int rate = g_emu->audioRate();
+        // The sound card can drop the stream (route change, headset, system audio
+        // reset) or silently stop pulling data; either way, nothing would ever
+        // play again. Reopen it.
+        if (g_stream) {
+            static uint32_t lastR = 0; static int stuck = 0;
+            const uint32_t rr = g_ringR.load(std::memory_order_relaxed);
+            stuck = (rr == lastR && ringFill() > (uint32_t)(RING_FRAMES * 3 / 4)) ? stuck + 1 : 0;
+            lastR = rr;
+            aaudio_stream_state_t st = AAudioStream_getState(g_stream);
+            if (g_audioDead.load() || stuck > 30 || st == AAUDIO_STREAM_STATE_DISCONNECTED || st == AAUDIO_STREAM_STATE_STOPPED || st == AAUDIO_STREAM_STATE_PAUSED) {
+                LOG("audio stream lost (state %d, stuck %d); reopening", (int)st, stuck);
+                stuck = 0; closeAudio();
+            }
+        }
         if (g_streamRate != OUT_RATE) openAudio(OUT_RATE);
         if (g_stream && !g_emu->audio.empty() && rate > 4000 && rate < 200000) {
             // Steer the queue toward TARGET_FILL: fuller than wanted -> consume input a
