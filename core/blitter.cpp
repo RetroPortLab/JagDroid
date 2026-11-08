@@ -294,7 +294,10 @@ void Jaguar::blitterGo() {
                 int n2 = nphr;
                 if (!dsta2 && !getenv("JAG_X_OLDA2")) {   // source phrases actually touched (misaligned source reads one more)
                     int off = a2.xsign ? (p2 - 1 - floorMod(a2x0, p2)) : floorMod(a2x0, p2);
-                    n2 = std::max(nphr, (off + inner + p2 - 1) / p2);
+                    // A source that starts further into its phrase than the destination makes the
+                    // blitter read one phrase past the pixel after the last one, even when that
+                    // lands exactly on a boundary (Battle Morph's wrapped sky pieces).
+                    n2 = std::max(nphr, off > lead ? (off + inner) / p2 + 1 : (off + inner + p2 - 1) / p2);
                 }
                 a2EndPhrase = phraseEnd(a2x0, p2, n2, a2.xsign);
             }

@@ -68,6 +68,15 @@ static void dump() {
         fprintf(stderr, "mem[$%06X] = %08X  bytes: %02X %02X %02X %02X\n", wa, J->read32(wa),
                 J->dram[wa], J->dram[wa + 1], J->dram[wa + 2], J->dram[wa + 3]);
     }
+    if (const char* w = getenv("JAG_STR")) {   // dump a string at a RAM address
+        unsigned wa = strtoul(w, nullptr, 16); fprintf(stderr, "str[$%06X] = \"", wa);
+        for (int i = 0; i < 200 && J->dram[wa + i]; i++) { unsigned char c = J->dram[wa + i]; fputc(c >= 32 && c < 127 ? c : (c == 10 ? '|' : '.'), stderr); }
+        fprintf(stderr, "\"\n");
+    }
+    if (getenv("JAG_DSPBLK")) {   // DSP RAM block markers (Arena Football's waveform allocator)
+        fprintf(stderr, "[42A0]=%08X [42A4]=%08X [42A8]=%08X [42AC]=%08X\n", J->read32(0x42A0), J->read32(0x42A4), J->read32(0x42A8), J->read32(0x42AC));
+        for (unsigned a = 0xF1B000; a < 0xF1D000; a += 0x200) fprintf(stderr, "blk %06X: %08X %08X\n", a, J->read32(a), J->read32(a + 4));
+    }
     fprintf(stderr, "stack:");
     for (int i = 0; i < 8; i++) fprintf(stderr, " %04X", J->read16(sp + i * 2));
     fprintf(stderr, "\n");
@@ -163,7 +172,7 @@ extern "C" void jag_trace_pc(unsigned int pc) {
         if (!init) { init = true; char b[256]; strncpy(b, bp, 255); b[255] = 0;
             for (char* t = strtok(b, ","); t; t = strtok(nullptr, ",")) bps.push_back(strtoul(t, nullptr, 16)); }
         static long bfrom = getenv("JAG_BREAKFROM") ? atol(getenv("JAG_BREAKFROM")) : 0;
-        for (unsigned a : bps) if (a == pc && hits < 40 && J && (long)J->frameCount >= bfrom) {
+        for (unsigned a : bps) if (a == pc && hits < (getenv("JAG_BREAKMAX") ? atoi(getenv("JAG_BREAKMAX")) : 40) && J && (long)J->frameCount >= bfrom) {
             hits++;
             fprintf(stderr, "[break %06X f%llu] D:", pc, J ? (unsigned long long)J->frameCount : 0ull);
             for (int r = M68K_REG_D0; r <= M68K_REG_D7; r++) fprintf(stderr, " %08X", m68k_get_reg(nullptr, (m68k_register_t)r));

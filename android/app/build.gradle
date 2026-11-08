@@ -11,8 +11,8 @@ android {
         applicationId 'com.retroportlab.jagdroid'
         minSdk 26          // AAudio
         targetSdk 35
-        versionCode 44
-        versionName '0.44-experimental'
+        versionCode 45
+        versionName '0.45-experimental'
         ndk {
             abiFilters 'arm64-v8a'   // Snapdragon handhelds
         }
