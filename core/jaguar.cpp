@@ -72,7 +72,27 @@ Jaguar::~Jaguar() {
     if (g_jag == this) g_jag = nullptr;
 }
 
+bool Jaguar::loadExecutable(const std::vector<uint8_t>& data, std::string* err) {
+    // 0x601A header with "JAGR" at $1C: load address at $22, size at $26, run address at $2A, code from $2E.
+    auto be32 = [&](size_t o) { return (uint32_t)data[o] << 24 | data[o+1] << 16 | data[o+2] << 8 | data[o+3]; };
+    if (data.size() < 0x2E || data[0] != 0x60 || data[1] != 0x1A || memcmp(&data[0x1C], "JAGR", 4) != 0) {
+        if (err) *err = "Not a Jaguar executable";
+        return false;
+    }
+    uint32_t load = be32(0x22), size = be32(0x26), run = be32(0x2A);
+    if (size > data.size() - 0x2E) size = (uint32_t)(data.size() - 0x2E);
+    if (load >= DRAM_SIZE || size > DRAM_SIZE - load) { if (err) *err = "Executable doesn't fit in the console's 2 MB of RAM"; return false; }
+    execImage.assign(data.begin() + 0x2E, data.begin() + 0x2E + size);
+    execLoadAddr = load; execRunAddr = run;
+    rom.clear();
+    romChecksum = 2166136261u;
+    for (uint8_t b : data) { romChecksum ^= b; romChecksum *= 16777619u; }
+    return true;
+}
+
 bool Jaguar::loadCart(const std::vector<uint8_t>& data, std::string* err) {
+    execImage.clear();
+    if (data.size() >= 0x2E && data[0] == 0x60 && data[1] == 0x1A && memcmp(&data[0x1C], "JAGR", 4) == 0) return loadExecutable(data, err);
     if (data.size() < 0x2000) { if (err) *err = "File is too small to be a Jaguar cartridge"; return false; }
     if (data.size() > ROM_MAX) { if (err) *err = "File is larger than the 6 MB cartridge space"; return false; }
     rom = data;
@@ -217,7 +237,7 @@ void Jaguar::reset() {
     jerry[J_SCLK + 3] = 19;
 
     m68k_pulse_reset();
-    if (hasBios) {
+    if (hasBios && execImage.empty()) {
         // At reset the BIOS is visible at address 0 for the vector fetch.
         auto b32 = [&](int o) { return (uint32_t)bios[o] << 24 | bios[o+1] << 16 | bios[o+2] << 8 | bios[o+3]; };
         m68k_set_reg(M68K_REG_SP, b32(0));
@@ -253,7 +273,10 @@ void Jaguar::bootWithoutBios() {
     }
 
     uint32_t start = 0x802000;
-    if (rom.size() >= 0x408) {
+    if (!execImage.empty()) {
+        memcpy(&dram[execLoadAddr], execImage.data(), execImage.size());
+        start = execRunAddr;
+    } else if (rom.size() >= 0x408) {
         uint32_t s = read32(0x800404);
         if (s >= 0x800000 && s < 0xE00000) start = s;
         else if (s < DRAM_SIZE && s >= 0x4000) start = s;
@@ -798,9 +821,22 @@ using jag::g_jag;
 unsigned int m68k_read_memory_8(unsigned int a) { return g_jag->read8(a); }
 unsigned int m68k_read_memory_16(unsigned int a) { return g_jag->read16(a); }
 unsigned int m68k_read_memory_32(unsigned int a) { return g_jag->read32(a); }
-void m68k_write_memory_8(unsigned int a, unsigned int v) { g_jag->write8(a, (uint8_t)v); }
-void m68k_write_memory_16(unsigned int a, unsigned int v) { g_jag->write16(a, (uint16_t)v); }
-void m68k_write_memory_32(unsigned int a, unsigned int v) { g_jag->write32(a, v); }
+// A RISC spinning on a local-RAM mailbox reacts within a few cycles on hardware, but
+// here it only runs in its time slice. When the 68000 writes the word it is polling,
+// give it a short burst right away so the 68000's next look at the reply sees it
+// (Native Demo checks the DSP's busy flag straight after handing it a job).
+static inline void riscCatchUp(unsigned a) {
+    jag::Jaguar* j = g_jag;
+    if (j->dsp.spinAddr && j->dsp.running && ((a & ~3u) & 0xFFFFFF) == j->dsp.spinAddr) {
+        static const bool off = getenv("JAG_X_NOCATCHUP") != nullptr;
+        if (off) return;
+        int bm = j->busMaster; j->busMaster = 2; j->dsp.spinAddr = 0; j->dsp.spinCount = 0;
+        j->dsp.run(300); j->busMaster = bm;
+    }
+}
+void m68k_write_memory_8(unsigned int a, unsigned int v) { g_jag->write8(a, (uint8_t)v); riscCatchUp(a); }
+void m68k_write_memory_16(unsigned int a, unsigned int v) { g_jag->write16(a, (uint16_t)v); riscCatchUp(a); }
+void m68k_write_memory_32(unsigned int a, unsigned int v) { g_jag->write32(a, v); riscCatchUp(a); }
 unsigned int m68k_read_disassembler_8(unsigned int a) { return g_jag->read8(a); }
 unsigned int m68k_read_disassembler_16(unsigned int a) { return g_jag->read16(a); }
 unsigned int m68k_read_disassembler_32(unsigned int a) { return g_jag->read32(a); }

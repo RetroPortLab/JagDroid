@@ -47,6 +47,8 @@ struct Risc {
     uint32_t branchTarget = 0;
 
     int64_t cycleDebt = 0;
+    // Spin-wait detection: address of a local-RAM long the RISC keeps re-reading (a mailbox poll).
+    uint32_t spinAddr = 0, lastLoadAddr = 0; int spinCount = 0;
     uint64_t instrCount = 0;
     int traceLeft = 0;
     int lastDest = -1;       // register written by the previous instruction (interlock)   // diagnostics: print this many instructions
@@ -110,6 +112,10 @@ public:
     ~Jaguar();
 
     bool loadCart(const std::vector<uint8_t>& data, std::string* err = nullptr);
+    // Jaguar executables (".jag" / Skunkboard "JAGR" files): loaded into DRAM and run directly.
+    bool loadExecutable(const std::vector<uint8_t>& data, std::string* err = nullptr);
+    std::vector<uint8_t> execImage;   // payload of a loaded executable (empty for cartridges)
+    uint32_t execLoadAddr = 0, execRunAddr = 0;
     bool loadBios(const std::vector<uint8_t>& data, std::string* err = nullptr);
     void reset();
     void runFrame();

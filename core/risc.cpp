@@ -69,7 +69,11 @@ void Risc::extAccess(bool write, uint32_t a) {
 uint32_t Risc::load32(uint32_t a) {
     a = unmirror(isDsp, a);
     uint32_t o = (a & ~3u) - ramBase;
-    if (o < ramSize) return (uint32_t)ram[o] << 24 | ram[o+1] << 16 | ram[o+2] << 8 | ram[o+3];
+    if (o < ramSize) {
+        if (a == lastLoadAddr) { if (spinCount < 100) spinCount++; if (spinCount >= 6) spinAddr = a & ~3u; }
+        else { lastLoadAddr = a; spinCount = 0; spinAddr = 0; }
+        return (uint32_t)ram[o] << 24 | ram[o+1] << 16 | ram[o+2] << 8 | ram[o+3];
+    }
     extAccess(false, a);  // external bus access is slower
     // The RISCs drop the low address bits on long accesses everywhere, not
     // just in local RAM. Power Drive Rally loads a long from $580E and
