@@ -1147,6 +1147,12 @@ public class MainActivity extends Activity {
             if (NativeLib.loadState(stateFile(gameKey, s).getAbsolutePath())) { closePauseMenu(); toast("Loaded slot " + s); }
             else toast(NativeLib.lastError());
         }));
+        actions.addView(row("Export state", "Copy slot to Downloads", null, v -> {
+            int s = prefs.getInt("slot", 1);
+            File f = stateFile(gameKey, s);
+            if (!f.exists()) { toast("Slot " + s + " is empty"); return; }
+            toast(exportState(f));
+        }));
         actions.addView(row("Reset game", null, null, v -> { NativeLib.reset(); closePauseMenu(); }));
         final View[] scan = new View[1];
         scan[0] = row("Scanlines", null, SCANLINE_NAMES[prefs.getInt("scanlines", 0)], v -> {
@@ -1179,6 +1185,41 @@ public class MainActivity extends Activity {
         pauseMenu = dim;
         refreshSlot.run();
         resume.requestFocus();
+    }
+
+    /** Copies a save state to the public Downloads folder so it can be shared. */
+    private String exportState(File f) {
+        String name = "JagDroid-" + f.getName().replaceAll("[^A-Za-z0-9._-]", "_");
+        try {
+            java.io.InputStream in = new java.io.FileInputStream(f);
+            java.io.OutputStream out;
+            String where;
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, name);
+                cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, "application/octet-stream");
+                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download");
+                android.net.Uri u = getContentResolver().insert(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (u == null) { in.close(); return "Export failed"; }
+                out = getContentResolver().openOutputStream(u);
+                where = "Downloads/" + name;
+            } else {
+                File d = android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS);
+                d.mkdirs();
+                out = new FileOutputStream(new File(d, name));
+                where = "Download/" + name;
+            }
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.close();
+            in.close();
+            return "Exported to " + where;
+        } catch (Exception e) {
+            return "Export failed: " + e.getMessage();
+        }
     }
 
     private void closePauseMenu() {
