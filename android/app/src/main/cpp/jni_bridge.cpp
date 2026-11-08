@@ -490,16 +490,21 @@ void emuLoop() {
         if (g_stream && !g_emu->audio.empty() && rate > 4000 && rate < 200000) {
             // Steer the queue toward TARGET_FILL: fuller than wanted -> consume input a
             // touch faster (fewer output frames), emptier -> a touch slower.
-            double err = ((double)ringFill() - TARGET_FILL) / TARGET_FILL;
+            // The queue level saw-tooths with every frame (a frame's audio arrives in one
+            // lump), so steer from a slow average of it, and by a tiny amount: steering
+            // on the raw level bent the pitch by up to a percent, heard as warble.
+            static double avg = TARGET_FILL;
+            const double fillNow = (double)ringFill();
+            avg += (fillNow - avg) * 0.01;
+            double err = (avg - TARGET_FILL) / TARGET_FILL;
             err = std::max(-1.0, std::min(1.0, err));
-            // Only a queue that is nearly dry (the emulator really is running below real
-            // time) bends the pitch, and the change is smoothed so a late frame is not
-            // heard as a brief slow-down.
-            double want = 1.0 + 0.01 * err;
-            if (err < -0.65) want += 1.2 * (err + 0.65);
-            want = std::max(0.5, want);
+            double want = 1.0 + 0.003 * err;
+            // Only a queue that is really running dry (the emulator is below real time)
+            // stretches the sound, smoothly.
+            const double low = fillNow / TARGET_FILL;
+            if (low < 0.3) want = std::min(want, 0.5 + low * 1.6);
             static double scale = 1.0;
-            scale += (want - scale) * (want < scale ? 0.25 : 0.05);
+            scale += (want - scale) * (want < scale ? 0.3 : 0.02);
             g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate, scale);
             ringPush(g_resampler.out.data(), (int)g_resampler.out.size() / 2);
         }
