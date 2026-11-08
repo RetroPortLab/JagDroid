@@ -346,7 +346,9 @@ bool Jaguar::tomReadHook(uint32_t off, int size, uint32_t& out) {
         return true;
     }
     if (off == T_BLIT_CMD || off == T_BLIT_CMD + 2) {
-        uint32_t idle = blitBusy > 0 ? 0 : 1;   // bit 0: blitter idle
+        // bit 0: blitter idle. An idle blitter also reports other status bits (0x805 as seen
+        // by other emulators); World Tour Racing waits for "(status >> 1) != 0".
+        uint32_t idle = blitBusy > 0 ? 0 : (getenv("JAG_X_OLDBSTAT") ? 1u : 0x805u);
         out = (size == 4) ? idle : ((off & 2) ? idle : 0);
         return true;
     }

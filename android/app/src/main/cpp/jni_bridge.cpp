@@ -113,7 +113,7 @@ struct Resampler {
 // ring runs dry the output fades out instead of cutting, and the resampler
 // speeds up or slows down by a fraction of a percent to hold the fill level.
 constexpr int RING_FRAMES = 1 << 14;                  // ~340 ms
-constexpr int TARGET_FILL = OUT_RATE * 110 / 1000;    // keep ~110 ms queued: rides out late frames without pitch changes
+constexpr int TARGET_FILL = OUT_RATE * 70 / 1000;     // keep ~110 ms queued: rides out late frames without pitch changes
 int16_t g_ring[RING_FRAMES * 2];
 std::atomic<uint32_t> g_ringW{0}, g_ringR{0};
 std::atomic<bool> g_ringPrimed{false};
@@ -428,7 +428,7 @@ static int g_ringTick = 0, g_dspLost = 0;
 static bool g_crashSaved = false;
 static void soundWatchdogLocked() {
     if (g_eepromPath.size() < 5) return;
-    if (++g_ringTick >= 120) {
+    if (++g_ringTick >= 600) {
         g_ringTick = 0;
         if (!g_crashSaved) {   // stop rotating once a crash was caught
             g_snaps.push_back(g_emu->saveState());
@@ -489,23 +489,10 @@ void emuLoop() {
         if (g_streamRate != OUT_RATE) openAudio(OUT_RATE);
         if (g_stream && !g_emu->audio.empty() && rate > 4000 && rate < 200000) {
             // Steer the queue toward TARGET_FILL: fuller than wanted -> consume input a
-            // touch faster (fewer output frames), emptier -> a touch slower.
-            // The queue level saw-tooths with every frame (a frame's audio arrives in one
-            // lump), so steer from a slow average of it, and by a tiny amount: steering
-            // on the raw level bent the pitch by up to a percent, heard as warble.
-            static double avg = TARGET_FILL;
-            const double fillNow = (double)ringFill();
-            avg += (fillNow - avg) * 0.01;
-            double err = (avg - TARGET_FILL) / TARGET_FILL;
+            // touch faster (fewer output frames), emptier -> a touch slower (as in v0.45).
+            double err = ((double)ringFill() - TARGET_FILL) / TARGET_FILL;
             err = std::max(-1.0, std::min(1.0, err));
-            double want = 1.0 + 0.003 * err;
-            // Only a queue that is really running dry (the emulator is below real time)
-            // stretches the sound, smoothly.
-            const double low = fillNow / TARGET_FILL;
-            if (low < 0.3) want = std::min(want, 0.5 + low * 1.6);
-            static double scale = 1.0;
-            scale += (want - scale) * (want < scale ? 0.3 : 0.02);
-            g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate, scale);
+            g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate, 1.0 + 0.01 * err);
             ringPush(g_resampler.out.data(), (int)g_resampler.out.size() / 2);
         }
 
