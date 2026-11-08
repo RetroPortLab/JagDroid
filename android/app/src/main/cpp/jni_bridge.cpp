@@ -113,7 +113,7 @@ struct Resampler {
 // ring runs dry the output fades out instead of cutting, and the resampler
 // speeds up or slows down by a fraction of a percent to hold the fill level.
 constexpr int RING_FRAMES = 1 << 14;                  // ~340 ms
-constexpr int TARGET_FILL = OUT_RATE * 70 / 1000;     // keep ~70 ms queued
+constexpr int TARGET_FILL = OUT_RATE * 110 / 1000;    // keep ~110 ms queued: rides out late frames without pitch changes
 int16_t g_ring[RING_FRAMES * 2];
 std::atomic<uint32_t> g_ringW{0}, g_ringR{0};
 std::atomic<bool> g_ringPrimed{false};
@@ -492,13 +492,14 @@ void emuLoop() {
             // touch faster (fewer output frames), emptier -> a touch slower.
             double err = ((double)ringFill() - TARGET_FILL) / TARGET_FILL;
             err = std::max(-1.0, std::min(1.0, err));
-            // A heavy scene can leave the emulator running below real time, so sound is
-            // produced slower than the card plays it. Rather than let the queue run dry
-            // (which was heard as music and effects dropping out), stretch the audio:
-            // below ~60% of the target fill the pitch drops smoothly, down to 0.4x.
-            double scale = 1.0 + 0.01 * err;
-            if (err < -0.4) scale += 1.5 * (err + 0.4);
-            scale = std::max(0.4, scale);
+            // Only a queue that is nearly dry (the emulator really is running below real
+            // time) bends the pitch, and the change is smoothed so a late frame is not
+            // heard as a brief slow-down.
+            double want = 1.0 + 0.01 * err;
+            if (err < -0.65) want += 1.2 * (err + 0.65);
+            want = std::max(0.5, want);
+            static double scale = 1.0;
+            scale += (want - scale) * (want < scale ? 0.25 : 0.05);
             g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate, scale);
             ringPush(g_resampler.out.data(), (int)g_resampler.out.size() / 2);
         }
