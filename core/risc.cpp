@@ -264,13 +264,20 @@ void Risc::run(int cycles) {
             if (stepGrant <= 0) { budget = 0; break; }   // halted, waiting for SINGLE_GO
             stepGrant--;
         }
-        if (!branchPending) checkInterrupts();
+        if (!branchPending && (intLatch & intEnable) && !(flags & IMASK)) checkInterrupts();
         step();
         budget -= 1 + cycleDebt;
         cycleDebt = 0;
     }
     if (budget < 0) cycleDebt = -budget;
 }
+
+static constexpr uint64_t immR1 = (1ull<<2)|(1ull<<3)|(1ull<<6)|(1ull<<7)|(1ull<<13)|(1ull<<14)|(1ull<<15)|(1ull<<24)|(1ull<<25)
+    |(1ull<<27)|(1ull<<29)|(1ull<<31)|(1ull<<35)|(1ull<<38)|(1ull<<43)|(1ull<<44)|(1ull<<49)|(1ull<<50)|(1ull<<53)|(1ull<<57);
+static constexpr uint64_t noReadR2 = (1ull<<34)|(1ull<<35)|(1ull<<36)|(1ull<<37)|(1ull<<38)|(1ull<<39)|(1ull<<40)|(1ull<<41)
+    |(1ull<<42)|(1ull<<43)|(1ull<<44)|(1ull<<51)|(1ull<<52)|(1ull<<53)|(1ull<<57)|(1ull<<58)|(1ull<<59);
+static constexpr uint64_t noWriteR2 = (1ull<<13)|(1ull<<30)|(1ull<<31)|(1ull<<45)|(1ull<<46)|(1ull<<47)|(1ull<<48)|(1ull<<49)
+    |(1ull<<50)|(1ull<<52)|(1ull<<53)|(1ull<<57)|(1ull<<60)|(1ull<<61);
 
 static bool gpcMatch(uint32_t a) {
     static std::vector<uint32_t> v = [] { std::vector<uint32_t> r; if (const char* e = getenv("JAG_GPCPC")) { char* p = (char*)e; while (*p) { char* q; r.push_back((uint32_t)strtoul(p, &q, 16)); if (q == p) break; p = *q ? q + 1 : q; } } return r; }();
@@ -283,7 +290,7 @@ static inline uint32_t quick(int n) { return n == 0 ? 32u : (uint32_t)n; }
 void Risc::step() {
     if (bankHold > 0) bankHold--;   // counts down across the FLAGS store and the next instruction
     const uint32_t addr = pc;
-    const uint16_t op = fetch16(addr);
+    const uint16_t op = (addr - ramBase) < ramSize ? (uint16_t)(ram[addr - ramBase] << 8 | ram[addr - ramBase + 1]) : fetch16(addr);
     pc += 2;
     instrCount++;
     if (!isDsp && g_pcHist) g_pcHist[(addr - 0xF03000) & 0xFFF]++;
@@ -306,7 +313,6 @@ void Risc::step() {
     { extern uint64_t g_opHist[2][64][32]; g_opHist[isDsp][opcode][r1]++; }
 #endif
     if (pcWatchOn && (isDsp == (getenv("JAG_PCWATCHDSP") != nullptr))) pcWatch(addr);
-    if (isDsp && addr == 0xF1B684 && getenv("JAG_DSPJ8")) { static int n = 0; if (R(8) < 0xF1B000 && n++ < 20) fprintf(stderr, "[j8] frame %llu r8=%08X r6=%08X r5=%08X r7=%08X r23=%08X\n", (unsigned long long)jag->frameCount, R(8), R(6), R(5), R(7), R(23)); }
     if (jag->verbose) {   // diagnostics: JAG_RISCWILD=1 reports the first jump out of local RAM
         static bool wildOn = getenv("JAG_RISCWILD") != nullptr;
         static long trapPc = getenv("JAG_RISCTRAP") ? strtol(getenv("JAG_RISCTRAP"), nullptr, 16) : -1;
@@ -345,12 +351,6 @@ void Risc::step() {
     // Pipeline interlock: an instruction that reads the register written by the
     // one before it waits a clock for the result (register scoreboard).
     {
-        static const uint64_t immR1 = (1ull<<2)|(1ull<<3)|(1ull<<6)|(1ull<<7)|(1ull<<13)|(1ull<<14)|(1ull<<15)|(1ull<<24)|(1ull<<25)
-            |(1ull<<27)|(1ull<<29)|(1ull<<31)|(1ull<<35)|(1ull<<38)|(1ull<<43)|(1ull<<44)|(1ull<<49)|(1ull<<50)|(1ull<<53)|(1ull<<57);
-        static const uint64_t noReadR2 = (1ull<<34)|(1ull<<35)|(1ull<<36)|(1ull<<37)|(1ull<<38)|(1ull<<39)|(1ull<<40)|(1ull<<41)
-            |(1ull<<42)|(1ull<<43)|(1ull<<44)|(1ull<<51)|(1ull<<52)|(1ull<<53)|(1ull<<57)|(1ull<<58)|(1ull<<59);
-        static const uint64_t noWriteR2 = (1ull<<13)|(1ull<<30)|(1ull<<31)|(1ull<<45)|(1ull<<46)|(1ull<<47)|(1ull<<48)|(1ull<<49)
-            |(1ull<<50)|(1ull<<52)|(1ull<<53)|(1ull<<57)|(1ull<<60)|(1ull<<61);
         const uint64_t bit = 1ull << opcode;
         if (lastDest >= 0 && ((!(immR1 & bit) && r1 == lastDest) || (!(noReadR2 & bit) && r2 == lastDest))) cycleDebt += 1;
         lastDest = (noWriteR2 & bit) ? -1 : r2;
