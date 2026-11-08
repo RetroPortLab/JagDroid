@@ -93,6 +93,7 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> state;
     auto fbHash = [&]() { uint64_t h = 1469598103934665603ull; for (int y = 0; y < j->frameHeight(); y++) for (int x = 0; x < j->frameWidth(); x++) { h ^= j->framebuffer()[y * jag::Jaguar::MAX_W + x]; h *= 1099511628211ull; } return h; };
     for (int f = 0; f < frames; f++) {
+        if (const char* ss = getenv("JAG_SAVESTATE")) { long sfr; char sp[300]; if (sscanf(ss, "%ld:%299s", &sfr, sp) == 2 && f == sfr) { auto st = j->saveState(); if (FILE* o = fopen(sp, "wb")) { fwrite(st.data(), 1, st.size(), o); fclose(o); } } }
         if (f == stateTest) { state = j->saveState(); printf("state saved at frame %d: %zu bytes\n", f, state.size()); }
         uint32_t m = 0;
         for (auto& h : holds) if (f >= h.from && f < h.to) m |= h.mask;
@@ -137,6 +138,7 @@ int main(int argc, char** argv) {
             }
         }
         if (const char* pl = getenv("JAG_PCLOG")) { if (f % atoi(pl) == 0) fprintf(stderr, "[pc] f%d PC=%06X SR=%04X gpu=%d dsp=%d blits=%llu\n", f, m68k_get_reg(nullptr, M68K_REG_PC), m68k_get_reg(nullptr, M68K_REG_SR), j->gpu.running, j->dsp.running, (unsigned long long)j->blitCount); if (getenv("JAG_PCBYTES") && f % atoi(pl) == 0) { unsigned pc = m68k_get_reg(nullptr, M68K_REG_PC); fprintf(stderr, "   code@%06X:", pc - 8); for (int k = -8; k < 24; k += 2) fprintf(stderr, " %04X", j->read16(pc + k)); fprintf(stderr, "\n"); unsigned sp = m68k_get_reg(nullptr, M68K_REG_SP); { unsigned nz=0, lastnz=0; for (unsigned a = 0x4000; a < 0x70000; a += 4) if (j->read32(a)) { nz++; lastnz = a; } fprintf(stderr, "   load: nonzero longs=%u last=%06X  @4000:", nz, lastnz); for (int k = 0; k < 40; k += 4) fprintf(stderr, " %08X", j->read32(0x4000 + k)); fprintf(stderr, "\n   @4018:"); for (int k = 0; k < 32; k += 4) fprintf(stderr, " %08X", j->read32(0x4018 + k)); fprintf(stderr, "\n"); } fprintf(stderr, "   vec:"); for (int k = 8; k < 0x40; k += 4) fprintf(stderr, " %02X=%06X", k, j->read32(k)); fprintf(stderr, "\n   sp=%06X:", sp); for (int k = 0; k < 40; k += 4) fprintf(stderr, " %08X", j->read32(sp + k)); fprintf(stderr, "\n"); } }
+        if (getenv("JAG_DSPWATCH")) { static bool rep = false; uint32_t dp = j->dsp.pc; if (!rep && j->dsp.running && !(dp >= 0xF1B000 && dp < 0xF1D000)) { rep = true; printf("[dspwatch] frame %d: DSP pc=%06X flags=%08X\n", f, dp, j->dsp.flags); } }
         audioSamples += j->audio.size() / 2;
         if (wavPath) wav.insert(wav.end(), j->audio.begin(), j->audio.end());
     }

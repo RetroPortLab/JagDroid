@@ -306,6 +306,7 @@ void Risc::step() {
     { extern uint64_t g_opHist[2][64][32]; g_opHist[isDsp][opcode][r1]++; }
 #endif
     if (pcWatchOn && (isDsp == (getenv("JAG_PCWATCHDSP") != nullptr))) pcWatch(addr);
+    if (isDsp && addr == 0xF1B684 && getenv("JAG_DSPJ8")) { static int n = 0; if (R(8) < 0xF1B000 && n++ < 20) fprintf(stderr, "[j8] frame %llu r8=%08X r6=%08X r5=%08X r7=%08X r23=%08X\n", (unsigned long long)jag->frameCount, R(8), R(6), R(5), R(7), R(23)); }
     if (jag->verbose) {   // diagnostics: JAG_RISCWILD=1 reports the first jump out of local RAM
         static bool wildOn = getenv("JAG_RISCWILD") != nullptr;
         static long trapPc = getenv("JAG_RISCTRAP") ? strtol(getenv("JAG_RISCTRAP"), nullptr, 16) : -1;

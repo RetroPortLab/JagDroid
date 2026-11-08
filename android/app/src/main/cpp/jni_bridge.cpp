@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <deque>
 #include <string>
 #include <thread>
 #include <vector>
@@ -401,6 +402,43 @@ void flushNvmLocked() {
     else LOG("could not write %s", p.c_str());
 }
 
+
+// Compresses a save state into the on-disk "JDZ1" form.
+static bool packState(const std::vector<uint8_t>& st, std::vector<uint8_t>& out) {
+    uLongf clen = compressBound(st.size());
+    out.assign(8 + clen, 0);
+    memcpy(out.data(), "JDZ1", 4);
+    uint32_t n = (uint32_t)st.size();
+    memcpy(out.data() + 4, &n, 4);
+    if (compress2(out.data() + 8, &clen, st.data(), st.size(), 6) != Z_OK) return false;
+    out.resize(8 + clen);
+    return true;
+}
+
+// Sound-engine watchdog: keeps a rolling set of one-second snapshots and, when the
+// DSP has run off into non-DSP memory for a while (the sound then stays silent for
+// good), saves the oldest snapshot so the lead-up can be replayed and fixed.
+static std::deque<std::vector<uint8_t>> g_snaps;
+static int g_ringTick = 0, g_dspLost = 0;
+static bool g_crashSaved = false;
+static void soundWatchdogLocked() {
+    if (g_eepromPath.size() < 5) return;
+    if (++g_ringTick >= 60) {
+        g_ringTick = 0;
+        g_snaps.push_back(g_emu->saveState());
+        if (g_snaps.size() > 8) g_snaps.pop_front();
+    }
+    uint32_t pc = g_emu->dsp.pc;
+    bool lost = g_emu->dsp.running && pc >= 0xF00000 && !(pc >= 0xF1B000 && pc < 0xF1D000);
+    g_dspLost = lost ? g_dspLost + 1 : 0;
+    if (g_dspLost >= 90 && !g_crashSaved && !g_snaps.empty()) {
+        g_crashSaved = true;
+        std::vector<uint8_t> out;
+        if (packState(g_snaps.front(), out))
+            writeFileAtomic(g_eepromPath.substr(0, g_eepromPath.size() - 4) + ".dspcrash.state", out.data(), out.size());
+    }
+}
+
 void emuLoop() {
     using clk = std::chrono::steady_clock;
     const auto frameTime = std::chrono::nanoseconds((long long)(1e9 / g_emu->refreshHz()));  // 59.94 or 50 Hz
@@ -415,6 +453,7 @@ void emuLoop() {
             g_emu->setButtons(g_buttons.load());
             g_emu->runFrame();
             present();
+            soundWatchdogLocked();
             // Games write their save chip a few bits at a time; wait until it has
             // been quiet for a couple of seconds' worth of checks, then save.
             if (++sinceFlush >= 120) { sinceFlush = 0; flushEepromLocked(); flushMemoryTrackLocked(); flushNvmLocked(); }
@@ -713,6 +752,7 @@ JNIEXPORT void JNICALL
 Java_com_retroportlab_jagdroid_NativeLib_setEepromPath(JNIEnv* env, jclass, jstring path) {
     std::lock_guard<std::mutex> lk(g_emuLock);
     g_eepromPath = toStr(env, path);
+    g_snaps.clear(); g_ringTick = 0; g_dspLost = 0; g_crashSaved = false;
 }
 
 JNIEXPORT void JNICALL
@@ -732,13 +772,8 @@ Java_com_retroportlab_jagdroid_NativeLib_saveState(JNIEnv* env, jclass, jstring 
         if (!g_emu) return JNI_FALSE;
         st = g_emu->saveState();
     }
-    uLongf clen = compressBound(st.size());
-    std::vector<uint8_t> out(8 + clen);
-    memcpy(out.data(), "JDZ1", 4);
-    uint32_t n = (uint32_t)st.size();
-    memcpy(out.data() + 4, &n, 4);
-    if (compress2(out.data() + 8, &clen, st.data(), st.size(), 6) != Z_OK) { g_error = "Could not compress the save state"; return JNI_FALSE; }
-    out.resize(8 + clen);
+    std::vector<uint8_t> out;
+    if (!packState(st, out)) { g_error = "Could not compress the save state"; return JNI_FALSE; }
     if (!writeFileAtomic(toStr(env, path), out.data(), out.size())) { g_error = "Could not write the save state"; return JNI_FALSE; }
     return JNI_TRUE;
 }

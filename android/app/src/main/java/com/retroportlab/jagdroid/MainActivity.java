@@ -1031,7 +1031,7 @@ public class MainActivity extends Activity {
     }
 
     private void enterGame(Game g) {
-        gameKey = g.key(); gameTitle = g.title;
+        gameKey = g.key(); gameTitle = g.title; new File(saveDir(), gameKey + ".dspcrash.state").delete();
         markPlayed(gameKey);
 
         screen = SCREEN_GAME;
@@ -1153,6 +1153,10 @@ public class MainActivity extends Activity {
             if (!f.exists()) { toast("Slot " + s + " is empty"); return; }
             toast(exportState(f));
         }));
+        File crash = new File(saveDir(), gameKey + ".dspcrash.state");
+        if (crash.exists()) {
+            actions.addView(row("Export sound-crash state", "For bug reports", null, v -> toast(exportState(crash))));
+        }
         actions.addView(row("Reset game", null, null, v -> { NativeLib.reset(); closePauseMenu(); }));
         final View[] scan = new View[1];
         scan[0] = row("Scanlines", null, SCANLINE_NAMES[prefs.getInt("scanlines", 0)], v -> {
