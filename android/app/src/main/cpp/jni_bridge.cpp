@@ -432,7 +432,14 @@ void emuLoop() {
             // touch faster (fewer output frames), emptier -> a touch slower.
             double err = ((double)ringFill() - TARGET_FILL) / TARGET_FILL;
             err = std::max(-1.0, std::min(1.0, err));
-            g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate, 1.0 + 0.01 * err);
+            // A heavy scene can leave the emulator running below real time, so sound is
+            // produced slower than the card plays it. Rather than let the queue run dry
+            // (which was heard as music and effects dropping out), stretch the audio:
+            // below ~60% of the target fill the pitch drops smoothly, down to 0.4x.
+            double scale = 1.0 + 0.01 * err;
+            if (err < -0.4) scale += 1.5 * (err + 0.4);
+            scale = std::max(0.4, scale);
+            g_resampler.process(g_emu->audio.data(), (int)g_emu->audio.size() / 2, rate, scale);
             ringPush(g_resampler.out.data(), (int)g_resampler.out.size() / 2);
         }
 
