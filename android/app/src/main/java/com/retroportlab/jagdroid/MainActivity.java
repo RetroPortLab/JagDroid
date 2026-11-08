@@ -1153,6 +1153,11 @@ public class MainActivity extends Activity {
             if (!f.exists()) { toast("Slot " + s + " is empty"); return; }
             toast(exportState(f));
         }));
+        actions.addView(row("Export earlier moment", "About 30 s ago, for bug reports", null, v -> {
+            File snap = new File(saveDir(), gameKey + ".earlier.state");
+            if (NativeLib.saveSnapshot(snap.getAbsolutePath())) toast(exportState(snap));
+            else toast(NativeLib.lastError());
+        }));
         File crash = new File(saveDir(), gameKey + ".dspcrash.state");
         if (crash.exists()) {
             actions.addView(row("Export sound-crash state", "For bug reports", null, v -> toast(exportState(crash))));

@@ -423,15 +423,17 @@ static int g_ringTick = 0, g_dspLost = 0;
 static bool g_crashSaved = false;
 static void soundWatchdogLocked() {
     if (g_eepromPath.size() < 5) return;
-    if (++g_ringTick >= 60) {
+    if (++g_ringTick >= 120) {
         g_ringTick = 0;
-        g_snaps.push_back(g_emu->saveState());
-        if (g_snaps.size() > 8) g_snaps.pop_front();
+        if (!g_crashSaved) {   // stop rotating once a crash was caught
+            g_snaps.push_back(g_emu->saveState());
+            if (g_snaps.size() > 15) g_snaps.pop_front();
+        }
     }
     uint32_t pc = g_emu->dsp.pc;
     bool lost = g_emu->dsp.running && pc >= 0xF00000 && !(pc >= 0xF1B000 && pc < 0xF1D000);
     g_dspLost = lost ? g_dspLost + 1 : 0;
-    if (g_dspLost >= 90 && !g_crashSaved && !g_snaps.empty()) {
+    if (g_dspLost >= 60 && !g_crashSaved && !g_snaps.empty()) {
         g_crashSaved = true;
         std::vector<uint8_t> out;
         if (packState(g_snaps.front(), out))
@@ -753,6 +755,17 @@ Java_com_retroportlab_jagdroid_NativeLib_setEepromPath(JNIEnv* env, jclass, jstr
     std::lock_guard<std::mutex> lk(g_emuLock);
     g_eepromPath = toStr(env, path);
     g_snaps.clear(); g_ringTick = 0; g_dspLost = 0; g_crashSaved = false;
+}
+
+// Writes the oldest rolling snapshot (about 30 s ago) for bug reports.
+JNIEXPORT jboolean JNICALL
+Java_com_retroportlab_jagdroid_NativeLib_saveSnapshot(JNIEnv* env, jclass, jstring path) {
+    std::lock_guard<std::mutex> lk(g_emuLock);
+    if (g_snaps.empty()) { g_error = "No earlier moment recorded yet"; return JNI_FALSE; }
+    std::vector<uint8_t> out;
+    if (!packState(g_snaps.front(), out)) { g_error = "Could not compress the snapshot"; return JNI_FALSE; }
+    if (!writeFileAtomic(toStr(env, path), out.data(), out.size())) { g_error = "Could not write the snapshot"; return JNI_FALSE; }
+    return JNI_TRUE;
 }
 
 JNIEXPORT void JNICALL

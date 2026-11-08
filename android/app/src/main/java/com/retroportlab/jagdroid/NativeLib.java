@@ -50,6 +50,7 @@ public final class NativeLib {
     public static native void flushSave();
     public static native void setCropOverscan(boolean on);
     public static native boolean saveState(String path);
+    public static native boolean saveSnapshot(String path);
     public static native boolean loadState(String path);
     /** Half-size copy of the current picture: [width, height, ARGB pixels...]. */
     public static native int[] getThumbnail();
