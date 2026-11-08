@@ -82,6 +82,7 @@ int main(int argc, char** argv) {
     if (nvmPath) { auto nv = slurp(nvmPath); j->setNvm(nv.data(), nv.size()); }
     if (memTrackPath) { auto mt = slurp(memTrackPath); if (!mt.empty()) j->setMemoryTrack(mt.data(), mt.size()); }
     j->reset();
+    if (const char* ls = getenv("JAG_LOADSTATE")) { std::string e; if (!j->loadState(slurp(ls), &e)) { fprintf(stderr, "loadState: %s\n", e.c_str()); return 1; } }
     if (smooth > 0) j->setShadeTracking(true);
     std::vector<uint16_t> raw(jag::Jaguar::MAX_W * jag::Jaguar::MAX_H);
     if (getenv("JAG_RAW") || getenv("JAG_PROBE")) j->rawOut = raw.data();

@@ -252,6 +252,7 @@ int main(int argc, char** argv) {
     }
     if (const char* mtp = getenv("JAG_MEMTRACK")) { std::ifstream mf(mtp, std::ios::binary); std::vector<uint8_t> mb((std::istreambuf_iterator<char>(mf)), std::istreambuf_iterator<char>()); J->setMemoryTrack(mb.data(), mb.size()); }
     J->reset();
+    if (const char* ls = getenv("JAG_LOADSTATE")) { std::ifstream sf(ls, std::ios::binary); std::vector<uint8_t> sb((std::istreambuf_iterator<char>(sf)), std::istreambuf_iterator<char>()); std::string e; if (!J->loadState(sb, &e)) { fprintf(stderr, "loadState: %s\n", e.c_str()); return 1; } }
     struct Hold { unsigned m; int a, b; };
     std::vector<Hold> holds;
     if (const char* h = getenv("JAG_HOLDS")) {   // "mask:from:to mask:from:to ..."

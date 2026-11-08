@@ -314,6 +314,14 @@ bool Jaguar::tomReadHook(uint32_t off, int size, uint32_t& out) {
                                            : (v >> (8 * (3 - (off & 3)))) & 0xFF);
         return true;
     }
+    // The blitter's A1 pointer reads back at different addresses than it is written:
+    // $F02204 returns A1_PIXEL ($F0220C) and $F02208 returns A1_FPIXEL ($F02218), as
+    // updated by the hardware after each blit. AvP's wall renderer reads the pointer
+    // this way to continue a texture column in a second blit.
+    if (size == 4 && (off == 0x2204 || off == 0x2208) && !getenv("JAG_X_OLDA1READ")) {
+        out = tomReg32(off == 0x2204 ? 0x220C : 0x2218);
+        return true;
+    }
     if (off == T_BLIT_CMD || off == T_BLIT_CMD + 2) {
         uint32_t idle = blitBusy > 0 ? 0 : 1;   // bit 0: blitter idle
         out = (size == 4) ? idle : ((off & 2) ? idle : 0);
