@@ -217,8 +217,7 @@ void Jaguar::blitterGo() {
     // (PATD bytes 2..3, i.e. the low half of the high longword). Phase Zero's ground
     // keeps its per-pixel shade at PATD byte 3 and drew as blue noise from lane 3.
     static const bool oldGour = getenv("JAG_X_OLDGOUR") != nullptr;
-    const int gourL = oldGour ? 3 : 1;
-    uint32_t inten = iph[gourL];
+    int gourL = 3;
     // Intensities saturate at 0 and $FFFFFF rather than wrapping.
     const int32_t iinc24 = (int32_t)((uint32_t)iinc << 8) >> 8;
     auto stepI = [&](uint32_t& v) {
@@ -235,6 +234,8 @@ void Jaguar::blitterGo() {
     const bool useZ = zbuff || dstwrz;
 
     Area& dstA = dsta2 ? a2 : a1;
+    if (!oldGour && dstA.xadd != 1) gourL = 1;   // BIOS letters (xadd 1) use lane 3
+    uint32_t inten = iph[gourL];
     Area& srcA = dsta2 ? a1 : a2;
 
     int64_t a1EndPhrase = 0;
