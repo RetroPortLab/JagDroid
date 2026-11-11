@@ -213,7 +213,12 @@ void Jaguar::blitterGo() {
         return (uint32_t)tom[B_PATD + 1 + 2 * p] << 16 | (uint32_t)tom[B_SRCD + 2 * p] << 8 | tom[B_SRCD + 2 * p + 1];
     };
     uint32_t iph[4] = {laneInten(0), laneInten(1), laneInten(2), laneInten(3)};
-    uint32_t inten = iph[3];
+    // Pixel mode (A1 steps by one pixel) takes its intensity and colour byte from lane 1
+    // (PATD bytes 2..3, i.e. the low half of the high longword). Phase Zero's ground
+    // keeps its per-pixel shade at PATD byte 3 and drew as blue noise from lane 3.
+    static const bool oldGour = getenv("JAG_X_OLDGOUR") != nullptr;
+    const int gourL = oldGour ? 3 : 1;
+    uint32_t inten = iph[gourL];
     // Intensities saturate at 0 and $FFFFFF rather than wrapping.
     const int32_t iinc24 = (int32_t)((uint32_t)iinc << 8) >> 8;
     auto stepI = [&](uint32_t& v) {
@@ -385,7 +390,7 @@ void Jaguar::blitterGo() {
                     iv = inten;
                     stepI(inten);
                 }
-                out = (fromPhrase(patd, 16, dstA.xadd == 0 ? dx : 3) & 0xFF00) | ((iv >> 16) & 0xFF);
+                out = (fromPhrase(patd, 16, dstA.xadd == 0 ? dx : gourL) & 0xFF00) | ((iv >> 16) & 0xFF);
                 ivUsed = iv;
             }
             if (dcompen) {
