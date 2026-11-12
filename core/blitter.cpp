@@ -370,7 +370,8 @@ void Jaguar::blitterGo() {
                 auto lane = [](uint32_t s16, uint32_t d16) {
                     int y = (int)(d16 & 0xFF) + (int8_t)(s16 & 0xFF);
                     y = y < 0 ? 0 : (y > 255 ? 255 : y);
-                    return (s16 & 0xFF00) | (uint32_t)y;
+                    static const bool addCol = getenv("JAG_X_NOADDCOL") == nullptr;   // Phase Zero: colour bytes add too (src colour 0 keeps dst hue)
+                    return addCol ? (((s16 + (d16 & 0xFF00)) & 0xFF00) | (uint32_t)y) : ((s16 & 0xFF00) | (uint32_t)y);
                 };
                 if (dstA.bpp == 16) out = lane(src, dst);
                 else if (dstA.bpp == 32) out = lane(src >> 16, dst >> 16) << 16 | lane(src & 0xFFFF, dst & 0xFFFF);
