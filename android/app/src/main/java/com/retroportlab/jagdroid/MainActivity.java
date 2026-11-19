@@ -440,20 +440,11 @@ public class MainActivity extends Activity {
         LinearLayout list = new LinearLayout(this);
         page("Settings", list, pill("Back", v -> showLibrary()));
 
-        list.addView(sectionTitle("Library"));
-        String folder = prefs.getString("folder", null);
-        View first = row("Games folder", folder == null ? "Not chosen" : Uri.parse(folder).getLastPathSegment(), "Change", v -> pick(PICK_FOLDER));
-        list.addView(first);
-
         list.addView(sectionTitle("Display"));
         list.addView(cycleRow("Scanlines", "CRT-style lines between the picture's rows", "scanlines", SCANLINE_NAMES,
                 NativeLib::setScanlines));
         list.addView(toggleRow("Crop overscan", "Hide the picture's outer border, which a TV would cut off (some games leave junk there)",
                 "cropOverscan", true, () -> NativeLib.setCropOverscan(prefs.getBoolean("cropOverscan", true))));
-        list.addView(toggleRow("Smooth Gouraud shading", "Full-precision colour on smoothly shaded 3D surfaces (removes banding)",
-                "smoothShade", false, this::applyEnhancements));
-        list.addView(cycleRow("Render scale", "2x doubles the picture and smooths shaded surfaces between pixels; "
-                + "polygon edges stay at the Jaguar's resolution", "renderScale", SCALE_NAMES, v -> applyEnhancements()));
         boolean hdrScreen = screenSupportsHdr();
         list.addView(toggleRow("HDR", hdrScreen
                         ? "Brighter highlights and full-brightness scanlines on this HDR screen"
@@ -461,8 +452,17 @@ public class MainActivity extends Activity {
                 "hdr", false, this::applyHdr));
         list.addView(cycleRow("HDR highlight boost", "How much brighter than normal white the brightest parts get",
                 "hdrPeak", HDR_PEAK_NAMES, v -> applyHdr()));
-        list.addView(toggleRow("Show FPS counter", "Frames per second in the corner while playing", "showFps", false));
+        list.addView(toggleRow("Show FPS", "Frames per second in the corner while playing", "showFps", false));
 
+        list.addView(sectionTitle("Controls"));
+        list.addView(row("Button layout", "X = A   ·   A = B   ·   B = C   ·   Y / Select = Option   ·   Start = Pause\n"
+                + "L1 R1 L2 R2 = keypad 1-4   ·   L3 = 0   ·   R3 = #   ·   Select + Start = menu", null, v -> { }));
+
+        list.addView(sectionTitle("Performance"));
+        list.addView(toggleRow("Smooth Gouraud shading", "Full-precision colour on smoothly shaded 3D surfaces (removes banding)",
+                "smoothShade", false, this::applyEnhancements));
+        list.addView(cycleRow("Render scale", "2x doubles the picture and smooths shaded surfaces between pixels; "
+                + "polygon edges stay at the Jaguar's resolution", "renderScale", SCALE_NAMES, v -> applyEnhancements()));
         list.addView(sectionTitle("System"));
         list.addView(cycleRow("Console region", "Auto picks PAL only for files marked Europe/PAL", "region", REGION_NAMES, null));
         String bios = prefs.getString("bios", null);
@@ -476,22 +476,21 @@ public class MainActivity extends Activity {
         list.addView(row("Memory Track", "The CD save cartridge: see what each game has saved, delete saves, free up space",
                 "Manage", v -> showMemoryTrack()));
 
-        list.addView(sectionTitle("Controls"));
-        list.addView(row("Button layout", "X = A   ·   A = B   ·   B = C   ·   Y / Select = Option   ·   Start = Pause\n"
-                + "L1 R1 L2 R2 = keypad 1-4   ·   L3 = 0   ·   R3 = #   ·   Select + Start = menu", null, v -> { }));
+        list.addView(sectionTitle("Library"));
+        String folder = prefs.getString("folder", null);
+        View first = row("Games folder", folder == null ? "Not chosen" : Uri.parse(folder).getLastPathSegment(), "Change", v -> pick(PICK_FOLDER));
+        list.addView(first);
 
-        list.addView(sectionTitle("Updates"));
+        list.addView(sectionTitle("About"));
         final View[] check = new View[1];
         check[0] = row("Check for updates", "Looks for a newer JagDroid on GitHub and installs it",
                 foundUpdate != null ? foundUpdate.tag + " available" : "Check", v -> checkForUpdate(check[0]));
         list.addView(check[0]);
         list.addView(toggleRow("Check automatically", "Look for a new version when JagDroid starts (at most twice a day)",
                 "autoUpdate", true));
-
-        list.addView(sectionTitle("About"));
         list.addView(row("JagDroid " + versionName(), "An experimental Atari Jaguar emulator written from scratch.\n"
                 + "Game saves and save states are kept in the app's private storage.", null, v -> { }));
-        first.requestFocus();
+        if (list.getChildCount() > 1) list.getChildAt(1).requestFocus();
     }
 
 
